@@ -46,11 +46,6 @@ class RoundedSelectionRowView: NSTableRowView {
     }
 }
 
-class TaggableView: NSView {
-    private var _tag: Int = 0
-    override var tag: Int { get { _tag } set { _tag = newValue } }
-}
-
 struct AppItem {
     let name: String
     let url: URL
@@ -63,6 +58,11 @@ struct AppItem {
 class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
+
+    // Prevent Cmd+W from closing the window
+    override func performClose(_ sender: Any?) {
+        // Do nothing - we handle Cmd+W for quitting apps instead
+    }
 }
 
 class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
@@ -134,12 +134,32 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         list.dataSource = self
         list.delegate = self
         list.target = self
-        list.doubleAction = #selector(launch)
+        list.action = #selector(tableClicked)
 
         // Mouse hover tracking
         NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
             self?.handleMouseMoved(event)
             return event
+        }
+    }
+
+    @objc func tableClicked() {
+        let row = list.clickedRow
+        guard row >= 0 && row < filtered.count else { return }
+
+        let clickX = list.convert(window.mouseLocationOutsideOfEventStream, from: nil).x
+        if clickX > 615 && filtered[row].running {
+            quitApp(filtered[row])
+        } else {
+            launch()
+        }
+    }
+
+    func quitApp(_ app: AppItem) {
+        guard let runningApp = NSWorkspace.shared.runningApplications.first(where: { $0.bundleURL == app.url }) else { return }
+        runningApp.terminate()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            self?.refreshApps()
         }
     }
 
@@ -157,7 +177,6 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         setupMenu()
         registerHotkey()
         enableLaunchAtLogin()
-        setupWindowObservers()
 
         // Load apps in background to avoid blocking startup
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -165,17 +184,6 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         }
     }
 
-    func setupWindowObservers() {
-        // Close on deselect (window loses focus)
-        NotificationCenter.default.addObserver(
-            forName: NSWindow.didResignKeyNotification,
-            object: window,
-            queue: .main
-        ) { [weak self] _ in
-            self?.window.orderOut(nil)
-            self?.search.stringValue = ""
-        }
-    }
 
     func setupMenu() {
         let mainMenu = NSMenu()
@@ -196,6 +204,8 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         editMenu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
         editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
         editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        editMenu.addItem(NSMenuItem.separator())
+        editMenu.addItem(NSMenuItem(title: "Quit App", action: #selector(quitSelectedApp), keyEquivalent: "w"))
         let editMenuItem = NSMenuItem()
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
@@ -228,9 +238,21 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
 
         // Local monitor - when Komet is focused
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self else { return event }
             if isHotkey(event) {
-                DispatchQueue.main.async { self?.toggle() }
+                DispatchQueue.main.async { self.toggle() }
                 return nil
+            }
+            // Handle Enter/Escape when window is visible
+            if self.window.isVisible {
+                if event.keyCode == 36 { // Enter
+                    self.launch()
+                    return nil
+                }
+                if event.keyCode == 53 { // Escape
+                    self.window.orderOut(nil)
+                    return nil
+                }
             }
             return event
         }
@@ -267,9 +289,8 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             window.orderOut(nil)
             search.stringValue = "" // Clear search on close
         } else {
-            // Reset filter but don't reload from disk
-            filtered = apps
-            list.reloadData()
+            // Refresh running status
+            refreshApps()
 
             window.center()
             window.makeKeyAndOrderFront(nil)
@@ -279,11 +300,15 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     }
 
     func controlTextDidChange(_ n: Notification) {
+        applyFilter()
+        if !filtered.isEmpty { list.selectRowIndexes([0], byExtendingSelection: false) }
+    }
+
+    func applyFilter() {
         let q = search.stringValue
         if q.isEmpty {
             filtered = apps
         } else {
-            // Fuzzy match and sort by score
             filtered = apps
                 .compactMap { app -> (app: AppItem, score: Int)? in
                     let result = fuzzyMatch(q, in: app.name)
@@ -293,7 +318,6 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
                 .map { $0.app }
         }
         list.reloadData()
-        if !filtered.isEmpty { list.selectRowIndexes([0], byExtendingSelection: false) }
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
@@ -322,6 +346,20 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         NSWorkspace.shared.open(filtered[list.selectedRow].url)
         window.orderOut(nil)
         search.stringValue = ""
+    }
+
+    @objc func quitSelectedApp() {
+        guard list.selectedRow >= 0 else { return }
+        let app = filtered[list.selectedRow]
+        guard app.running else { return }
+        quitApp(app)
+    }
+
+    func refreshApps() {
+        let running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleURL })
+        apps = apps.map { AppItem(name: $0.name, url: $0.url, icon: $0.icon, running: running.contains($0.url)) }
+        apps.sort { ($0.running ? 0 : 1, $0.name) < ($1.running ? 0 : 1, $1.name) }
+        applyFilter()
     }
 }
 
@@ -354,27 +392,28 @@ extension Komet: NSTableViewDataSource, NSTableViewDelegate {
             txt.tag = 2
             cell?.addSubview(txt)
 
-            // Running Indicator
-            let dot = TaggableView(frame: NSRect(x: 600, y: 22, width: 8, height: 8))
-            dot.wantsLayer = true
-            dot.layer?.backgroundColor = NSColor.green.cgColor
-            dot.layer?.cornerRadius = 4
+            // Running indicator (green dot)
+            let dot = NSTextField(labelWithString: "●")
+            dot.frame = NSRect(x: 618, y: 14, width: 20, height: 20)
+            dot.font = .systemFont(ofSize: 12)
+            dot.textColor = .systemGreen
             dot.tag = 3
             cell?.addSubview(dot)
+
+            // Close button
+            let closeBtn = NSTextField(labelWithString: "✕")
+            closeBtn.frame = NSRect(x: 640, y: 14, width: 20, height: 20)
+            closeBtn.font = .systemFont(ofSize: 14, weight: .medium)
+            closeBtn.textColor = .secondaryLabelColor
+            closeBtn.tag = 4
+            cell?.addSubview(closeBtn)
         }
 
-        // Update view content
-        if let img = cell?.viewWithTag(1) as? NSImageView {
-            img.image = app.icon
-        }
-
-        if let txt = cell?.viewWithTag(2) as? NSTextField {
-            txt.stringValue = app.name
-        }
-
-        if let dot = cell?.viewWithTag(3) {
-            dot.isHidden = !app.running
-        }
+        // Update content
+        (cell?.viewWithTag(1) as? NSImageView)?.image = app.icon
+        (cell?.viewWithTag(2) as? NSTextField)?.stringValue = app.name
+        cell?.viewWithTag(3)?.isHidden = !app.running
+        cell?.viewWithTag(4)?.isHidden = !app.running
 
         return cell
     }
