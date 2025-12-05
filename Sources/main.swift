@@ -135,6 +135,21 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         list.delegate = self
         list.target = self
         list.doubleAction = #selector(launch)
+
+        // Mouse hover tracking
+        NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
+            self?.handleMouseMoved(event)
+            return event
+        }
+    }
+
+    func handleMouseMoved(_ event: NSEvent) {
+        guard window.isVisible else { return }
+        let point = list.convert(event.locationInWindow, from: nil)
+        let row = list.row(at: point)
+        if row >= 0 && row != list.selectedRow {
+            list.selectRowIndexes([row], byExtendingSelection: false)
+        }
     }
 
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -142,10 +157,23 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         setupMenu()
         registerHotkey()
         enableLaunchAtLogin()
+        setupWindowObservers()
 
         // Load apps in background to avoid blocking startup
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             self?.loadApps()
+        }
+    }
+
+    func setupWindowObservers() {
+        // Close on deselect (window loses focus)
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.window.orderOut(nil)
+            self?.search.stringValue = ""
         }
     }
 
