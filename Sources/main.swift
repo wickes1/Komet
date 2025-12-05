@@ -156,6 +156,11 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             self?.handleMouseMoved(event)
             return event
         }
+
+        // Auto-focus when mouse enters window
+        NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
+            self?.handleGlobalMouseMoved(event)
+        }
     }
 
     @objc func tableClicked() {
@@ -184,6 +189,15 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         let row = list.row(at: point)
         if row >= 0 && row != list.selectedRow {
             list.selectRowIndexes([row], byExtendingSelection: false)
+        }
+    }
+
+    func handleGlobalMouseMoved(_ event: NSEvent) {
+        guard window.isVisible else { return }
+        let mouseLocation = NSEvent.mouseLocation
+        if window.frame.contains(mouseLocation) && !window.isKeyWindow {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
         }
     }
 
