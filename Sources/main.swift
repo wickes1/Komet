@@ -51,6 +51,11 @@ struct AppItem {
     let url: URL
     let icon: NSImage
     let running: Bool
+
+    // Sort: running first, then alphabetical
+    static func sortOrder(_ a: AppItem, _ b: AppItem) -> Bool {
+        (a.running ? 0 : 1, a.name) < (b.running ? 0 : 1, b.name)
+    }
 }
 
 // MARK: - Custom Panel (for keyboard shortcut support)
@@ -69,9 +74,11 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     let window: KeyablePanel
     let search: NSTextField
     let list: NSTableView
+    let filterIndicator: NSTextField
 
     var apps: [AppItem] = []
     var filtered: [AppItem] = []
+    var showRunningOnly = false
 
     override init() {
         // Borderless floating panel with Visual Effect View
@@ -99,13 +106,20 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         window.contentView = visualEffect
 
         // Search field
-        search = NSTextField(frame: NSRect(x: 20, y: 390, width: 640, height: 40))
+        search = NSTextField(frame: NSRect(x: 20, y: 390, width: 560, height: 40))
         search.placeholderString = "Search apps..."
         search.focusRingType = .none
         search.isBezeled = false
         search.drawsBackground = false
         search.font = .systemFont(ofSize: 24, weight: .light)
         search.textColor = .white
+
+        // Filter indicator (right side)
+        filterIndicator = NSTextField(labelWithString: "All")
+        filterIndicator.frame = NSRect(x: 590, y: 398, width: 70, height: 24)
+        filterIndicator.font = .systemFont(ofSize: 14, weight: .medium)
+        filterIndicator.textColor = .secondaryLabelColor
+        filterIndicator.alignment = .right
 
         // Results list
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 20, width: 680, height: 360))
@@ -127,6 +141,7 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         scroll.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 20, right: 0)
 
         window.contentView?.addSubview(search)
+        window.contentView?.addSubview(filterIndicator)
         window.contentView?.addSubview(scroll)
 
         super.init()
@@ -183,7 +198,6 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             self?.loadApps()
         }
     }
-
 
     func setupMenu() {
         let mainMenu = NSMenu()
@@ -243,7 +257,7 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
                 DispatchQueue.main.async { self.toggle() }
                 return nil
             }
-            // Handle Enter/Escape when window is visible
+            // Handle Enter/Escape/Tab when window is visible
             if self.window.isVisible {
                 if event.keyCode == 36 { // Enter
                     self.launch()
@@ -251,6 +265,10 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
                 }
                 if event.keyCode == 53 { // Escape
                     self.window.orderOut(nil)
+                    return nil
+                }
+                if event.keyCode == 48 { // Tab
+                    self.toggleRunningFilter()
                     return nil
                 }
             }
@@ -274,8 +292,7 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
                 newApps.append(AppItem(name: name, url: url, icon: icon, running: running.contains(url)))
             }
         }
-        // Sort: Running first, then alphabetical
-        newApps.sort { ($0.running ? 0 : 1, $0.name) < ($1.running ? 0 : 1, $1.name) }
+        newApps.sort(by: AppItem.sortOrder)
 
         DispatchQueue.main.async { [weak self] in
             self?.apps = newApps
@@ -288,6 +305,8 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         if window.isVisible {
             window.orderOut(nil)
             search.stringValue = "" // Clear search on close
+            showRunningOnly = false // Reset filter mode
+            filterIndicator.stringValue = "All"
         } else {
             // Refresh running status
             refreshApps()
@@ -300,16 +319,17 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     }
 
     func controlTextDidChange(_ n: Notification) {
-        applyFilter()
-        if !filtered.isEmpty { list.selectRowIndexes([0], byExtendingSelection: false) }
+        applyFilter(selectFirst: true)
     }
 
-    func applyFilter() {
+    func applyFilter(selectFirst: Bool = false) {
         let q = search.stringValue
+        let source = showRunningOnly ? apps.filter { $0.running } : apps
+
         if q.isEmpty {
-            filtered = apps
+            filtered = source
         } else {
-            filtered = apps
+            filtered = source
                 .compactMap { app -> (app: AppItem, score: Int)? in
                     let result = fuzzyMatch(q, in: app.name)
                     return result.matches ? (app, result.score) : nil
@@ -318,6 +338,15 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
                 .map { $0.app }
         }
         list.reloadData()
+        if selectFirst && !filtered.isEmpty {
+            list.selectRowIndexes([0], byExtendingSelection: false)
+        }
+    }
+
+    func toggleRunningFilter() {
+        showRunningOnly.toggle()
+        filterIndicator.stringValue = showRunningOnly ? "Running" : "All"
+        applyFilter(selectFirst: true)
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
@@ -358,7 +387,7 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     func refreshApps() {
         let running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleURL })
         apps = apps.map { AppItem(name: $0.name, url: $0.url, icon: $0.icon, running: running.contains($0.url)) }
-        apps.sort { ($0.running ? 0 : 1, $0.name) < ($1.running ? 0 : 1, $1.name) }
+        apps.sort(by: AppItem.sortOrder)
         applyFilter()
     }
 }
