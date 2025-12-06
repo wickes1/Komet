@@ -12,6 +12,11 @@ cask "komet" do
   app "Komet.app"
 
   postflight do
+    # Remove quarantine flag to bypass Gatekeeper for unsigned app
+    system_command "/usr/bin/xattr",
+                   args: ["-cr", "#{appdir}/Komet.app"],
+                   sudo: false
+
     # Remind user about accessibility permissions
     ohai "Komet requires Accessibility permissions to work."
     ohai "Go to System Settings > Privacy & Security > Accessibility"
@@ -19,7 +24,7 @@ cask "komet" do
   end
 
   zap trash: [
-    "~/Library/Preferences/com.komet.launcher.plist",
-    "~/Library/Caches/com.komet.launcher",
+    "~/Library/Preferences/com.wickes1.komet.plist",
+    "~/Library/Caches/com.wickes1.komet",
   ]
 end

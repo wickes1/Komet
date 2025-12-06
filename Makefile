@@ -2,7 +2,7 @@
 
 # Configuration
 APP_NAME := Komet
-BUNDLE_ID := com.komet.launcher
+BUNDLE_ID := com.wickes1.komet
 VERSION := $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "0.0.0")
 
 # Signing identity (set via environment or replace with your identity)
