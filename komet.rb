@@ -14,6 +14,10 @@ cask "komet" do
 
   app "Komet.app"
 
+  postflight do
+    system_command "open", args: ["#{appdir}/Komet.app"]
+  end
+
   caveats <<~EOS
     Komet is unsigned. If blocked by Gatekeeper:
     1. Go to System Settings → Privacy & Security
