@@ -161,7 +161,7 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
 
     func loadApps() {
         let ws = NSWorkspace.shared
-        let running = Set(ws.runningApplications.compactMap { $0.bundleURL?.standardized })
+        let running = Set(ws.runningApplications.compactMap { $0.bundleURL?.resolvingSymlinksInPath() })
         var seen = Set<String>()
         var result: [AppItem] = []
 
@@ -177,7 +177,7 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             .components(separatedBy: "\n").filter { !$0.isEmpty } ?? []
 
         for path in paths + Config.specialApps {
-            let url = URL(fileURLWithPath: path).standardized
+            let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
             guard seen.insert(url.path.lowercased()).inserted,
                   url.pathComponents.filter({ $0.hasSuffix(".app") }).count == 1,
                   Config.appDirectories.contains(where: { path.hasPrefix($0) }) || Config.specialApps.contains(path)
@@ -201,7 +201,7 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     }
 
     func refreshApps() {
-        let running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleURL?.standardized })
+        let running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleURL?.resolvingSymlinksInPath() })
         apps = apps.map { AppItem(name: $0.name, url: $0.url, icon: $0.icon, running: running.contains($0.url)) }
         apps.sort(by: <)
         applyFilter()
@@ -264,7 +264,7 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     }
 
     func quitApp(_ app: AppItem) {
-        NSWorkspace.shared.runningApplications.first { $0.bundleURL?.standardized == app.url }?.terminate()
+        NSWorkspace.shared.runningApplications.first { $0.bundleURL?.resolvingSymlinksInPath() == app.url }?.terminate()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.refreshApps() }
     }
 
