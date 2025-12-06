@@ -4,100 +4,92 @@ import AppKit
 
 enum Config {
     static let githubURL = "https://github.com/wickes1/Komet"
-    static let releasesURL = "\(githubURL)/releases/latest"
+    static let appDirectories = ["/Applications", "/System/Applications", NSHomeDirectory() + "/Applications"]
+    static let specialApps = ["/System/Library/CoreServices/Finder.app"]
 }
 
 // MARK: - Fuzzy Matching
 
 func fuzzyMatch(_ query: String, in text: String) -> (matches: Bool, score: Int) {
-    let query = query.lowercased()
-    let text = text.lowercased()
+    let q = query.lowercased(), t = text.lowercased()
+    guard !q.isEmpty else { return (true, 0) }
+    if t.contains(q) { return (true, 1000) }
 
-    if query.isEmpty { return (true, 0) }
-    if text.contains(query) { return (true, 1000) } // Exact substring gets highest score
-
-    var queryIndex = query.startIndex
-    var score = 0
-    var prevMatchIndex: Int? = nil
-
-    for (i, char) in text.enumerated() {
-        if queryIndex < query.endIndex && char == query[queryIndex] {
-            // Bonus for consecutive matches
-            if let prev = prevMatchIndex, prev + 1 == i {
-                score += 10
-            }
-            // Bonus for matching at start or after space
-            if i == 0 || (i > 0 && text[text.index(text.startIndex, offsetBy: i - 1)] == " ") {
-                score += 20
-            }
-            score += 1
-            prevMatchIndex = i
-            queryIndex = query.index(after: queryIndex)
-        }
+    var qi = q.startIndex, score = 0, prev: Int?
+    for (i, c) in t.enumerated() {
+        guard qi < q.endIndex, c == q[qi] else { continue }
+        score += (prev == i - 1 ? 10 : 0) + (i == 0 || t[t.index(t.startIndex, offsetBy: i - 1)] == " " ? 20 : 0) + 1
+        prev = i
+        qi = q.index(after: qi)
     }
+    return (qi == q.endIndex, score)
+}
 
-    return (queryIndex == query.endIndex, score)
+// MARK: - Data Model
+
+struct AppItem {
+    let name: String, url: URL, icon: NSImage, running: Bool
+    static func < (a: AppItem, b: AppItem) -> Bool {
+        (a.running ? 0 : 1, a.name.lowercased()) < (b.running ? 0 : 1, b.name.lowercased())
+    }
 }
 
 // MARK: - Custom Views
 
 class RoundedSelectionRowView: NSTableRowView {
     override func drawSelection(in dirtyRect: NSRect) {
-        if selectionHighlightStyle != .none {
-            let selectionRect = bounds.insetBy(dx: 10, dy: 0)
-            NSColor.selectedContentBackgroundColor.setFill()
-            let path = NSBezierPath(roundedRect: selectionRect, xRadius: 8, yRadius: 8)
-            path.fill()
-        }
+        guard selectionHighlightStyle != .none else { return }
+        NSColor.selectedContentBackgroundColor.setFill()
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 10, dy: 0), xRadius: 8, yRadius: 8).fill()
     }
 }
-
-struct AppItem {
-    let name: String
-    let url: URL
-    let icon: NSImage
-    let running: Bool
-
-    // Sort: running first, then alphabetical
-    static func sortOrder(_ a: AppItem, _ b: AppItem) -> Bool {
-        (a.running ? 0 : 1, a.name) < (b.running ? 0 : 1, b.name)
-    }
-}
-
-// MARK: - Custom Panel (for keyboard shortcut support)
 
 class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
-
-    // Prevent Cmd+W from closing the window
-    override func performClose(_ sender: Any?) {
-        // Do nothing - we handle Cmd+W for quitting apps instead
-    }
+    override func performClose(_ sender: Any?) {}
 }
+
+// MARK: - Helpers
+
+func makeVisualEffectView(_ frame: NSRect, cornerRadius: CGFloat = 16) -> NSVisualEffectView {
+    let v = NSVisualEffectView(frame: frame)
+    v.autoresizingMask = [.width, .height]
+    v.material = .hudWindow
+    v.state = .active
+    v.wantsLayer = true
+    v.layer?.cornerRadius = cornerRadius
+    v.layer?.masksToBounds = true
+    return v
+}
+
+// MARK: - Main Application
 
 class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     let window: KeyablePanel
     let search: NSTextField
     let list: NSTableView
     let filterIndicator: NSTextField
+    let statusItem: NSStatusItem
 
     var apps: [AppItem] = []
     var filtered: [AppItem] = []
     var showRunningOnly = false
+    var monitors: [Any] = []
     var aboutPanel: NSPanel?
-    var aboutEventMonitor: Any?
-    var statusItem: NSStatusItem?
+    var aboutMonitor: Any?
+    var hasPromptedAccessibility = false
+
+    deinit {
+        monitors.forEach { NSEvent.removeMonitor($0) }
+        if let m = aboutMonitor { NSEvent.removeMonitor(m) }
+        NSStatusBar.system.removeStatusItem(statusItem)
+    }
 
     override init() {
-        // Menu bar icon for fallback access
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        if let button = statusItem?.button {
-            button.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Komet")
-            button.action = #selector(statusBarClicked)
-        }
+        statusItem.button?.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Komet")
 
-        // Borderless floating panel with Visual Effect View
         window = KeyablePanel(
             contentRect: NSRect(x: 0, y: 0, width: 680, height: 450),
             styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView],
@@ -109,19 +101,8 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.center()
+        window.contentView = makeVisualEffectView(window.contentView!.bounds)
 
-        // Visual Effect View for Glassmorphism
-        let visualEffect = NSVisualEffectView(frame: window.contentView!.bounds)
-        visualEffect.autoresizingMask = [.width, .height]
-        visualEffect.material = .hudWindow
-        visualEffect.state = .active
-        visualEffect.wantsLayer = true
-        visualEffect.layer?.cornerRadius = 16
-        visualEffect.layer?.masksToBounds = true
-
-        window.contentView = visualEffect
-
-        // Search field
         search = NSTextField(frame: NSRect(x: 20, y: 390, width: 560, height: 40))
         search.placeholderString = "Search apps..."
         search.focusRingType = .none
@@ -130,26 +111,22 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         search.font = .systemFont(ofSize: 24, weight: .light)
         search.textColor = .white
 
-        // Filter indicator (right side)
         filterIndicator = NSTextField(labelWithString: "All")
         filterIndicator.frame = NSRect(x: 590, y: 398, width: 70, height: 24)
         filterIndicator.font = .systemFont(ofSize: 14, weight: .medium)
         filterIndicator.textColor = .secondaryLabelColor
         filterIndicator.alignment = .right
 
-        // Results list
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 20, width: 680, height: 360))
         list = NSTableView()
         list.headerView = nil
         list.rowHeight = 50
         list.intercellSpacing = NSSize(width: 0, height: 10)
         list.backgroundColor = .clear
         list.style = .plain
+        list.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("app")))
+        list.tableColumns.first?.width = 640
 
-        let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("app"))
-        col.width = 640
-        list.addTableColumn(col)
-
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 20, width: 680, height: 360))
         scroll.documentView = list
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
@@ -161,324 +138,85 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         window.contentView?.addSubview(scroll)
 
         super.init()
+
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(toggle)
         search.delegate = self
         list.dataSource = self
         list.delegate = self
         list.target = self
         list.action = #selector(tableClicked)
 
-        // Mouse hover tracking
-        NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
-            self?.handleMouseMoved(event)
-            return event
-        }
-
-        // Auto-focus when mouse enters window
-        NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
-            self?.handleGlobalMouseMoved(event)
-        }
-    }
-
-    @objc func tableClicked() {
-        let row = list.clickedRow
-        guard row >= 0 && row < filtered.count else { return }
-
-        let clickX = list.convert(window.mouseLocationOutsideOfEventStream, from: nil).x
-        if clickX > 615 && filtered[row].running {
-            quitApp(filtered[row])
-        } else {
-            launch()
-        }
-    }
-
-    func quitApp(_ app: AppItem) {
-        guard let runningApp = NSWorkspace.shared.runningApplications.first(where: { $0.bundleURL == app.url }) else { return }
-        runningApp.terminate()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            self?.refreshApps()
-        }
-    }
-
-    @objc func statusBarClicked() {
-        toggle()
-    }
-
-    func handleMouseMoved(_ event: NSEvent) {
-        guard window.isVisible, event.window == window else { return }
-        let point = list.convert(event.locationInWindow, from: nil)
-        let row = list.row(at: point)
-        if row >= 0 && row != list.selectedRow {
-            list.selectRowIndexes([row], byExtendingSelection: false)
-        }
-    }
-
-    func handleGlobalMouseMoved(_ event: NSEvent) {
-        guard window.isVisible else { return }
-        let mouseLocation = NSEvent.mouseLocation
-        if window.frame.contains(mouseLocation) && !window.isKeyWindow {
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-        }
+        setupMouseTracking()
     }
 
     func applicationDidFinishLaunching(_ n: Notification) {
         NSApp.setActivationPolicy(.accessory)
         setupMenu()
         requestAccessibilityPermission()
-
-        // Load apps in background to avoid blocking startup
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.loadApps()
-        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in self?.loadApps() }
     }
 
-    func setupMenu() {
-        let mainMenu = NSMenu()
-
-        // App menu
-        let appMenu = NSMenu()
-        appMenu.addItem(NSMenuItem(title: "Quit Komet", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
-        let appMenuItem = NSMenuItem()
-        appMenuItem.submenu = appMenu
-        mainMenu.addItem(appMenuItem)
-
-        // Edit menu (for Cmd+A/C/V/X)
-        let editMenu = NSMenu(title: "Edit")
-        editMenu.addItem(NSMenuItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z"))
-        editMenu.addItem(NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "Z"))
-        editMenu.addItem(NSMenuItem.separator())
-        editMenu.addItem(NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
-        editMenu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
-        editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
-        editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
-        editMenu.addItem(NSMenuItem.separator())
-        editMenu.addItem(NSMenuItem(title: "Quit App", action: #selector(quitSelectedApp), keyEquivalent: "w"))
-        let editMenuItem = NSMenuItem()
-        editMenuItem.submenu = editMenu
-        mainMenu.addItem(editMenuItem)
-
-        NSApp.mainMenu = mainMenu
-    }
-
-    var globalMonitor: Any?
-    var hasPromptedAccessibility = false
-
-    func requestAccessibilityPermission() {
-        // Check if already trusted
-        if AXIsProcessTrusted() {
-            registerHotkey()
-            return
-        }
-
-        // Show prompt only once
-        if !hasPromptedAccessibility {
-            let opts = NSDictionary(object: kCFBooleanTrue!, forKey: kAXTrustedCheckOptionPrompt.takeUnretainedValue() as NSString) as CFDictionary
-            AXIsProcessTrustedWithOptions(opts)
-            hasPromptedAccessibility = true
-        }
-
-        // Poll silently until permission is granted
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-            if AXIsProcessTrusted() {
-                self?.registerHotkey()
-            } else {
-                self?.requestAccessibilityPermission()
-            }
-        }
-    }
-
-    func registerHotkey() {
-        let isHotkey = { (event: NSEvent) -> Bool in
-            event.modifierFlags.contains(.command) && event.keyCode == 49 // Cmd+Space
-        }
-
-        // Global monitor - when other apps are focused
-        if globalMonitor == nil {
-            globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                if isHotkey(event) { DispatchQueue.main.async { self?.toggle() } }
-            }
-        }
-
-        // Local monitor - when Komet is focused
-        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self = self else { return event }
-            if isHotkey(event) {
-                DispatchQueue.main.async { self.toggle() }
-                return nil
-            }
-            // Handle Tab/Cmd+Q/Cmd+R when window is visible
-            // Note: Enter/Escape are handled by control(_:textView:doCommandBy:)
-            if self.window.isVisible {
-                if event.keyCode == 48 { // Tab
-                    self.toggleRunningFilter()
-                    return nil
-                }
-                if event.keyCode == 12 && event.modifierFlags.contains(.command) { // Cmd+Q
-                    NSApp.terminate(nil)
-                    return nil
-                }
-                if event.keyCode == 15 && event.modifierFlags.contains(.command) { // Cmd+R
-                    self.restartApp()
-                    return nil
-                }
-                if event.keyCode == 43 && event.modifierFlags.contains(.command) { // Cmd+,
-                    self.showAbout()
-                    return nil
-                }
-            }
-            return event
-        }
-    }
-
-    func showAbout() {
-        // Toggle: close if already open
-        if let panel = aboutPanel, panel.isVisible {
-            panel.close()
-            if let monitor = aboutEventMonitor {
-                NSEvent.removeMonitor(monitor)
-                aboutEventMonitor = nil
-            }
-            aboutPanel = nil
-            return
-        }
-
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
-
-        aboutPanel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 260, height: 180),
-            styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView],
-            backing: .buffered, defer: false
-        )
-        guard let aboutPanel = aboutPanel else { return }
-        aboutPanel.level = .floating
-        aboutPanel.isOpaque = false
-        aboutPanel.backgroundColor = .clear
-        aboutPanel.titleVisibility = .hidden
-        aboutPanel.titlebarAppearsTransparent = true
-        aboutPanel.center()
-
-        let visualEffect = NSVisualEffectView(frame: aboutPanel.contentView!.bounds)
-        visualEffect.autoresizingMask = [.width, .height]
-        visualEffect.material = .hudWindow
-        visualEffect.state = .active
-        visualEffect.wantsLayer = true
-        visualEffect.layer?.cornerRadius = 16
-        visualEffect.layer?.masksToBounds = true
-        aboutPanel.contentView = visualEffect
-
-        // App icon from bundle Resources
-        let icon = NSImageView(frame: NSRect(x: 98, y: 110, width: 64, height: 64))
-        if let resourcePath = Bundle.main.resourcePath {
-            let iconPath = (resourcePath as NSString).appendingPathComponent("AppIcon.icns")
-            if let appIcon = NSImage(contentsOfFile: iconPath) {
-                icon.image = appIcon
-            } else {
-                icon.image = NSApp.applicationIconImage
-            }
-        } else {
-            icon.image = NSApp.applicationIconImage
-        }
-        icon.imageScaling = .scaleProportionallyUpOrDown
-        visualEffect.addSubview(icon)
-
-        // App name
-        let name = NSTextField(labelWithString: "Komet")
-        name.frame = NSRect(x: 0, y: 80, width: 260, height: 24)
-        name.font = .systemFont(ofSize: 18, weight: .semibold)
-        name.textColor = .white
-        name.alignment = .center
-        visualEffect.addSubview(name)
-
-        // Version
-        let versionLabel = NSTextField(labelWithString: "v\(version)")
-        versionLabel.frame = NSRect(x: 0, y: 58, width: 260, height: 18)
-        versionLabel.font = .systemFont(ofSize: 12, weight: .regular)
-        versionLabel.textColor = .tertiaryLabelColor
-        versionLabel.alignment = .center
-        visualEffect.addSubview(versionLabel)
-
-        // Links row
-        let github = NSTextField(labelWithString: "GitHub")
-        github.frame = NSRect(x: 70, y: 20, width: 50, height: 16)
-        github.font = .systemFont(ofSize: 12, weight: .medium)
-        github.textColor = .linkColor
-        github.isSelectable = false
-        github.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(openGitHub)))
-        visualEffect.addSubview(github)
-
-        let separator = NSTextField(labelWithString: "·")
-        separator.frame = NSRect(x: 122, y: 20, width: 16, height: 16)
-        separator.font = .systemFont(ofSize: 12)
-        separator.textColor = .tertiaryLabelColor
-        separator.alignment = .center
-        visualEffect.addSubview(separator)
-
-        let releases = NSTextField(labelWithString: "Releases")
-        releases.frame = NSRect(x: 138, y: 20, width: 55, height: 16)
-        releases.font = .systemFont(ofSize: 12, weight: .medium)
-        releases.textColor = .linkColor
-        releases.isSelectable = false
-        releases.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(checkForUpdates)))
-        visualEffect.addSubview(releases)
-
-        aboutEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if event.keyCode == 53 { // Escape
-                self?.showAbout() // Toggle off
-            }
-            return event
-        }
-
-        aboutPanel.makeKeyAndOrderFront(nil)
-    }
-
-    @objc func openGitHub() {
-        guard let url = URL(string: Config.githubURL) else { return }
-        NSWorkspace.shared.open(url)
-    }
-
-    @objc func checkForUpdates() {
-        guard let url = URL(string: Config.releasesURL) else { return }
-        NSWorkspace.shared.open(url)
-    }
+    // MARK: - App Discovery
 
     func loadApps() {
-        var newApps: [AppItem] = []
         let ws = NSWorkspace.shared
-        let running = Set(ws.runningApplications.compactMap { $0.bundleURL })
-        let fm = FileManager.default
+        let running = Set(ws.runningApplications.compactMap { $0.bundleURL?.standardized })
+        var seen = Set<String>()
+        var result: [AppItem] = []
 
-        let dirs = ["/Applications", "/System/Applications", "\(NSHomeDirectory())/Applications"]
-        for dir in dirs {
-            guard let enumerator = fm.enumerator(at: URL(fileURLWithPath: dir), includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { continue }
-            for case let url as URL in enumerator {
-                if url.pathExtension == "app" {
-                    let name = url.deletingPathExtension().lastPathComponent
-                    let icon = ws.icon(forFile: url.path)
-                    icon.size = NSSize(width: 32, height: 32)
-                    newApps.append(AppItem(name: name, url: url, icon: icon, running: running.contains(url)))
-                    enumerator.skipDescendants() // Don't scan inside .app bundles
-                }
-            }
+        let task = Process()
+        let pipe = Pipe()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
+        task.arguments = ["kMDItemKind == 'Application'"]
+        task.standardOutput = pipe
+        try? task.run()
+        task.waitUntilExit()
+
+        let paths = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .components(separatedBy: "\n").filter { !$0.isEmpty } ?? []
+
+        for path in paths + Config.specialApps {
+            let url = URL(fileURLWithPath: path).standardized
+            guard seen.insert(url.path.lowercased()).inserted,
+                  url.pathComponents.filter({ $0.hasSuffix(".app") }).count == 1,
+                  Config.appDirectories.contains(where: { path.hasPrefix($0) }) || Config.specialApps.contains(path)
+            else { continue }
+
+            let bundle = Bundle(url: url)
+            let name = bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+                ?? bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String
+                ?? url.deletingPathExtension().lastPathComponent
+            let icon = ws.icon(forFile: url.path)
+            icon.size = NSSize(width: 32, height: 32)
+            result.append(AppItem(name: name, url: url, icon: icon, running: running.contains(url)))
         }
-        newApps.sort(by: AppItem.sortOrder)
 
+        result.sort(by: <)
         DispatchQueue.main.async { [weak self] in
-            self?.apps = newApps
-            self?.filtered = newApps
+            self?.apps = result
+            self?.filtered = result
             self?.list.reloadData()
         }
     }
 
-    func toggle() {
+    func refreshApps() {
+        let running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleURL?.standardized })
+        apps = apps.map { AppItem(name: $0.name, url: $0.url, icon: $0.icon, running: running.contains($0.url)) }
+        apps.sort(by: <)
+        applyFilter()
+    }
+
+    // MARK: - Window
+
+    @objc func toggle() {
         if window.isVisible {
             window.orderOut(nil)
-            search.stringValue = "" // Clear search on close
-            showRunningOnly = false // Reset filter mode
+            search.stringValue = ""
+            showRunningOnly = false
             filterIndicator.stringValue = "All"
         } else {
-            // Refresh running status
             refreshApps()
-
             window.center()
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -486,29 +224,18 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         }
     }
 
-    func controlTextDidChange(_ n: Notification) {
-        applyFilter(selectFirst: true)
-    }
+    // MARK: - Filter
+
+    func controlTextDidChange(_ n: Notification) { applyFilter(selectFirst: true) }
 
     func applyFilter(selectFirst: Bool = false) {
         let q = search.stringValue
-        let source = showRunningOnly ? apps.filter { $0.running } : apps
-
-        if q.isEmpty {
-            filtered = source
-        } else {
-            filtered = source
-                .compactMap { app -> (app: AppItem, score: Int)? in
-                    let result = fuzzyMatch(q, in: app.name)
-                    return result.matches ? (app, result.score) : nil
-                }
-                .sorted { $0.score > $1.score }
-                .map { $0.app }
-        }
+        let source = showRunningOnly ? apps.filter(\.running) : apps
+        filtered = q.isEmpty ? source : source
+            .compactMap { let r = fuzzyMatch(q, in: $0.name); return r.matches ? ($0, r.score) : nil }
+            .sorted { $0.1 > $1.1 }.map(\.0)
         list.reloadData()
-        if selectFirst && !filtered.isEmpty {
-            list.selectRowIndexes([0], byExtendingSelection: false)
-        }
+        if selectFirst && !filtered.isEmpty { list.selectRowIndexes([0], byExtendingSelection: false) }
     }
 
     func toggleRunningFilter() {
@@ -517,123 +244,269 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         applyFilter(selectFirst: true)
     }
 
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
-        switch sel {
-        case #selector(NSResponder.moveDown(_:)):
-            list.selectRowIndexes([min(list.selectedRow + 1, filtered.count - 1)], byExtendingSelection: false)
-            list.scrollRowToVisible(list.selectedRow)
-            return true
-        case #selector(NSResponder.moveUp(_:)):
-            list.selectRowIndexes([max(list.selectedRow - 1, 0)], byExtendingSelection: false)
-            list.scrollRowToVisible(list.selectedRow)
-            return true
-        case #selector(NSResponder.insertNewline(_:)):
+    // MARK: - Actions
+
+    @objc func tableClicked() {
+        let row = list.clickedRow
+        guard row >= 0, row < filtered.count else { return }
+        if list.convert(window.mouseLocationOutsideOfEventStream, from: nil).x > 615, filtered[row].running {
+            quitApp(filtered[row])
+        } else {
             launch()
-            return true
-        case #selector(NSResponder.cancelOperation(_:)):
-            window.orderOut(nil)
-            return true
-        default:
-            return false
         }
     }
 
     @objc func launch() {
-        guard list.selectedRow >= 0 else { return }
+        guard list.selectedRow >= 0, list.selectedRow < filtered.count else { return }
         NSWorkspace.shared.open(filtered[list.selectedRow].url)
         window.orderOut(nil)
         search.stringValue = ""
     }
 
+    func quitApp(_ app: AppItem) {
+        NSWorkspace.shared.runningApplications.first { $0.bundleURL?.standardized == app.url }?.terminate()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.refreshApps() }
+    }
+
     @objc func quitSelectedApp() {
-        guard list.selectedRow >= 0 else { return }
-        let app = filtered[list.selectedRow]
-        guard app.running else { return }
-        quitApp(app)
+        guard list.selectedRow >= 0, list.selectedRow < filtered.count, filtered[list.selectedRow].running else { return }
+        quitApp(filtered[list.selectedRow])
     }
 
     func restartApp() {
-        guard let executablePath = Bundle.main.executablePath else { return }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executablePath)
-        try? process.run()
+        guard let path = Bundle.main.executablePath else { return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        try? p.run()
         NSApp.terminate(nil)
     }
 
-    func refreshApps() {
-        let running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleURL })
-        apps = apps.map { AppItem(name: $0.name, url: $0.url, icon: $0.icon, running: running.contains($0.url)) }
-        apps.sort(by: AppItem.sortOrder)
-        applyFilter()
+    // MARK: - Keyboard
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
+        switch sel {
+        case #selector(NSResponder.moveDown(_:)):
+            guard !filtered.isEmpty else { return true }
+            let row = min(list.selectedRow + 1, filtered.count - 1)
+            list.selectRowIndexes([row], byExtendingSelection: false)
+            list.scrollRowToVisible(row)
+        case #selector(NSResponder.moveUp(_:)):
+            guard !filtered.isEmpty else { return true }
+            let row = max(list.selectedRow - 1, 0)
+            list.selectRowIndexes([row], byExtendingSelection: false)
+            list.scrollRowToVisible(row)
+        case #selector(NSResponder.insertNewline(_:)): launch()
+        case #selector(NSResponder.cancelOperation(_:)): window.orderOut(nil)
+        default: return false
+        }
+        return true
+    }
+
+    // MARK: - Mouse
+
+    func setupMouseTracking() {
+        monitors.append(NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { [weak self] e in
+            guard let self = self, self.window.isVisible, e.window == self.window else { return e }
+            let row = self.list.row(at: self.list.convert(e.locationInWindow, from: nil))
+            if row >= 0, row != self.list.selectedRow { self.list.selectRowIndexes([row], byExtendingSelection: false) }
+            return e
+        }!)
+        monitors.append(NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { [weak self] _ in
+            guard let self = self, self.window.isVisible, self.window.frame.contains(NSEvent.mouseLocation), !self.window.isKeyWindow else { return }
+            self.window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }!)
+    }
+
+    // MARK: - Menu & Hotkey
+
+    func setupMenu() {
+        let mainMenu = NSMenu()
+        let appMenu = NSMenu()
+        appMenu.addItem(NSMenuItem(title: "Quit Komet", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        let appMenuItem = NSMenuItem()
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(NSMenuItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z"))
+        editMenu.addItem(NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "Z"))
+        editMenu.addItem(.separator())
+        editMenu.addItem(NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
+        editMenu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+        editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        editMenu.addItem(.separator())
+        editMenu.addItem(NSMenuItem(title: "Quit App", action: #selector(quitSelectedApp), keyEquivalent: "w"))
+        let editMenuItem = NSMenuItem()
+        editMenuItem.submenu = editMenu
+        mainMenu.addItem(editMenuItem)
+        NSApp.mainMenu = mainMenu
+    }
+
+    func requestAccessibilityPermission() {
+        if AXIsProcessTrusted() { registerHotkey(); return }
+        if !hasPromptedAccessibility {
+            AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary)
+            hasPromptedAccessibility = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.requestAccessibilityPermission() }
+    }
+
+    func registerHotkey() {
+        let isHotkey: (NSEvent) -> Bool = { $0.modifierFlags.contains(.command) && $0.keyCode == 49 }
+
+        monitors.append(NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            if isHotkey(e) { DispatchQueue.main.async { self?.toggle() } }
+        }!)
+
+        monitors.append(NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            guard let self = self else { return e }
+            if isHotkey(e) { self.toggle(); return nil }
+            guard self.window.isVisible else { return e }
+            switch (e.keyCode, e.modifierFlags.contains(.command)) {
+            case (48, _): self.toggleRunningFilter(); return nil
+            case (12, true): NSApp.terminate(nil); return nil
+            case (15, true): self.restartApp(); return nil
+            case (43, true): self.showAbout(); return nil
+            default: return e
+            }
+        }!)
+    }
+
+    // MARK: - About
+
+    func showAbout() {
+        if aboutPanel?.isVisible == true { closeAbout(); return }
+
+        let panel = KeyablePanel(
+            contentRect: NSRect(x: 0, y: 0, width: 260, height: 180),
+            styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView],
+            backing: .buffered, defer: false
+        )
+        panel.level = .floating
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.center()
+        let content = makeVisualEffectView(panel.contentView!.bounds)
+        panel.contentView = content
+
+        let icon = NSImageView(frame: NSRect(x: 98, y: 110, width: 64, height: 64))
+        icon.image = Bundle.main.resourcePath.flatMap { NSImage(contentsOfFile: ($0 as NSString).appendingPathComponent("AppIcon.icns")) } ?? NSApp.applicationIconImage
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        content.addSubview(icon)
+
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+        for (text, y, size, weight, color): (String, CGFloat, CGFloat, NSFont.Weight, NSColor) in [
+            ("Komet", 80, 18, .semibold, .white),
+            ("v\(version)", 58, 12, .regular, .tertiaryLabelColor)
+        ] {
+            let l = NSTextField(labelWithString: text)
+            l.frame = NSRect(x: 0, y: y, width: 260, height: 24)
+            l.font = .systemFont(ofSize: size, weight: weight)
+            l.textColor = color
+            l.alignment = .center
+            content.addSubview(l)
+        }
+
+        for (text, x, url): (String, CGFloat, String) in [("GitHub", 70, Config.githubURL), ("Releases", 138, Config.githubURL + "/releases/latest")] {
+            let l = NSTextField(labelWithString: text)
+            l.frame = NSRect(x: x, y: 20, width: 55, height: 16)
+            l.font = .systemFont(ofSize: 12, weight: .medium)
+            l.textColor = .linkColor
+            l.tag = url.hashValue
+            l.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(openLink(_:))))
+            content.addSubview(l)
+        }
+
+        let sep = NSTextField(labelWithString: "·")
+        sep.frame = NSRect(x: 122, y: 20, width: 16, height: 16)
+        sep.font = .systemFont(ofSize: 12)
+        sep.textColor = .tertiaryLabelColor
+        sep.alignment = .center
+        content.addSubview(sep)
+
+        aboutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            if e.keyCode == 53 { self?.closeAbout() }
+            return e
+        }
+        aboutPanel = panel
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    func closeAbout() {
+        aboutPanel?.close()
+        aboutPanel = nil
+        if let m = aboutMonitor { NSEvent.removeMonitor(m); aboutMonitor = nil }
+    }
+
+    @objc func openLink(_ gesture: NSClickGestureRecognizer) {
+        guard let tag = gesture.view?.tag else { return }
+        let url = tag == Config.githubURL.hashValue ? Config.githubURL : Config.githubURL + "/releases/latest"
+        if let u = URL(string: url) { NSWorkspace.shared.open(u) }
     }
 }
 
+// MARK: - TableView
+
 extension Komet: NSTableViewDataSource, NSTableViewDelegate {
     func numberOfRows(in tableView: NSTableView) -> Int { filtered.count }
-
-    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        return RoundedSelectionRowView()
-    }
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { RoundedSelectionRowView() }
 
     func tableView(_ tableView: NSTableView, viewFor col: NSTableColumn?, row: Int) -> NSView? {
+        guard row < filtered.count else { return nil }
         let app = filtered[row]
         let id = NSUserInterfaceItemIdentifier("Cell")
 
         var cell = tableView.makeView(withIdentifier: id, owner: nil) as? NSTableCellView
         if cell == nil {
-            cell = NSTableCellView()
-            cell?.identifier = id
+            let c = NSTableCellView()
+            c.identifier = id
 
-            // Icon
-            let img = NSImageView(frame: NSRect(x: 20, y: 9, width: 32, height: 32))
-            img.tag = 1
-            cell?.addSubview(img)
+            let icon = NSImageView(frame: NSRect(x: 20, y: 9, width: 32, height: 32))
+            icon.tag = 1
+            c.addSubview(icon)
 
-            // Text
-            let txt = NSTextField(labelWithString: "")
-            txt.frame = NSRect(x: 64, y: 14, width: 400, height: 22)
-            txt.font = .systemFont(ofSize: 18, weight: .regular)
-            txt.textColor = .white
-            txt.tag = 2
-            cell?.addSubview(txt)
+            let name = NSTextField(labelWithString: "")
+            name.frame = NSRect(x: 64, y: 14, width: 400, height: 22)
+            name.font = .systemFont(ofSize: 18)
+            name.textColor = .white
+            name.tag = 2
+            c.addSubview(name)
 
-            // Running indicator (green dot)
             let dot = NSTextField(labelWithString: "●")
             dot.frame = NSRect(x: 618, y: 14, width: 20, height: 20)
             dot.font = .systemFont(ofSize: 12)
             dot.textColor = .systemGreen
             dot.tag = 3
-            cell?.addSubview(dot)
+            c.addSubview(dot)
 
-            // Close button
-            let closeBtn = NSTextField(labelWithString: "✕")
-            closeBtn.frame = NSRect(x: 640, y: 14, width: 20, height: 20)
-            closeBtn.font = .systemFont(ofSize: 14, weight: .medium)
-            closeBtn.textColor = .secondaryLabelColor
-            closeBtn.tag = 4
-            cell?.addSubview(closeBtn)
+            let close = NSTextField(labelWithString: "✕")
+            close.frame = NSRect(x: 640, y: 14, width: 20, height: 20)
+            close.font = .systemFont(ofSize: 14, weight: .medium)
+            close.textColor = .secondaryLabelColor
+            close.tag = 4
+            c.addSubview(close)
+
+            cell = c
         }
 
-        // Update content
         (cell?.viewWithTag(1) as? NSImageView)?.image = app.icon
         (cell?.viewWithTag(2) as? NSTextField)?.stringValue = app.name
         cell?.viewWithTag(3)?.isHidden = !app.running
         cell?.viewWithTag(4)?.isHidden = !app.running
-
         return cell
     }
 }
 
-// Ensure only one instance runs (only when running as .app bundle)
-if let bundleID = Bundle.main.bundleIdentifier {
-    let runningApps = NSWorkspace.shared.runningApplications.filter {
-        $0.bundleIdentifier == bundleID && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
-    }
-    if !runningApps.isEmpty {
-        // Another instance is running - activate it and exit
-        runningApps.first?.activate()
-        exit(0)
-    }
+// MARK: - Entry Point
+
+if let id = Bundle.main.bundleIdentifier,
+   let other = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == id && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) {
+    other.activate()
+    exit(0)
 }
 
 let app = NSApplication.shared
