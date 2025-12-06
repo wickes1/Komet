@@ -135,3 +135,35 @@ jobs:
             Komet.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Homebrew Tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "HOMEBREW_TAP_TOKEN not set, skipping tap update"
+            exit 0
+          fi
+
+          git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/wickes1/homebrew-tap.git tap-repo
+          cd tap-repo
+
+          cat > Casks/komet.rb << 'CASK'
+          cask "komet" do
+            version "${{ steps.version.outputs.VERSION }}"
+            sha256 "${{ steps.sha256.outputs.DMG_SHA256 }}"
+
+            url "https://github.com/wickes1/Komet/releases/download/v#{version}/Komet.dmg"
+            name "Komet"
+            desc "Minimal macOS app launcher"
+            homepage "https://github.com/wickes1/Komet"
+
+            app "Komet.app"
+          end
+          CASK
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/komet.rb
+          git commit -m "Update komet to v${{ steps.version.outputs.VERSION }}"
+          git push
