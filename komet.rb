@@ -13,9 +13,10 @@ cask "komet" do
 
   postflight do
     # Remove quarantine flag to bypass Gatekeeper for unsigned app
+    # Using sudo for recursive removal on app bundle
     system_command "/usr/bin/xattr",
-                   args: ["-cr", "#{appdir}/Komet.app"],
-                   sudo: false
+                   args: ["-r", "-d", "com.apple.quarantine", "#{appdir}/Komet.app"],
+                   sudo: true
 
     # Remind user about accessibility permissions
     ohai "Komet requires Accessibility permissions to work."
