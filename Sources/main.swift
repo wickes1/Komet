@@ -1,5 +1,4 @@
 import AppKit
-import ServiceManagement
 
 // MARK: - Configuration
 
@@ -97,7 +96,6 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             button.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Komet")
             button.action = #selector(statusBarClicked)
         }
-
 
         // Borderless floating panel with Visual Effect View
         window = KeyablePanel(
@@ -227,7 +225,6 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         NSApp.setActivationPolicy(.accessory)
         setupMenu()
         requestAccessibilityPermission()
-        enableLaunchAtLogin()
 
         // Load apps in background to avoid blocking startup
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -261,19 +258,6 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         mainMenu.addItem(editMenuItem)
 
         NSApp.mainMenu = mainMenu
-    }
-
-    func enableLaunchAtLogin() {
-        if #available(macOS 13.0, *) {
-            // Only register if not already enabled
-            if SMAppService.mainApp.status != .enabled {
-                do {
-                    try SMAppService.mainApp.register()
-                } catch {
-                    // Failed to register - silently continue
-                }
-            }
-        }
     }
 
     var globalMonitor: Any?
