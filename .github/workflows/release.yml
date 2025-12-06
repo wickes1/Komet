@@ -1,0 +1,134 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Build Release
+        run: |
+          swift build -c release
+
+      - name: Get version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Create App Bundle
+        run: |
+          mkdir -p Komet.app/Contents/MacOS
+          mkdir -p Komet.app/Contents/Resources
+          cp .build/release/Komet Komet.app/Contents/MacOS/
+          cp AppIcon.icns Komet.app/Contents/Resources/
+          cp Info.plist Komet.app/Contents/
+          # Inject version from git tag
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${{ steps.version.outputs.VERSION }}" Komet.app/Contents/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ steps.version.outputs.VERSION }}" Komet.app/Contents/Info.plist
+
+      - name: Import Code Signing Certificate
+        if: env.MACOS_CERTIFICATE != ''
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          KEYCHAIN_PWD: ${{ secrets.KEYCHAIN_PWD }}
+        run: |
+          echo $MACOS_CERTIFICATE | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PWD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PWD" build.keychain
+          security import certificate.p12 -k build.keychain -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PWD" build.keychain
+          rm -f certificate.p12
+
+      - name: Sign App (if certificate available)
+        if: env.MACOS_CERTIFICATE != ''
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          SIGNING_IDENTITY: ${{ secrets.SIGNING_IDENTITY }}
+        run: |
+          codesign --force --options runtime --entitlements Komet.entitlements \
+            --sign "$SIGNING_IDENTITY" Komet.app
+          codesign --verify --verbose Komet.app
+
+      - name: Ad-hoc Sign (if no certificate)
+        if: env.MACOS_CERTIFICATE == ''
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+        run: |
+          codesign --force --sign - Komet.app
+
+      - name: Create DMG
+        run: |
+          mkdir -p dmg-temp
+          cp -r Komet.app dmg-temp/
+          ln -s /Applications dmg-temp/Applications
+          hdiutil create -volname "Komet" -srcfolder dmg-temp \
+            -ov -format UDZO Komet.dmg
+          rm -rf dmg-temp
+
+      - name: Notarize DMG
+        if: env.APPLE_ID != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          xcrun notarytool submit Komet.dmg \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait
+          xcrun stapler staple Komet.dmg
+
+      - name: Create ZIP
+        run: |
+          ditto -c -k --keepParent Komet.app Komet.zip
+
+      - name: Calculate SHA256
+        id: sha256
+        run: |
+          echo "DMG_SHA256=$(shasum -a 256 Komet.dmg | cut -d ' ' -f 1)" >> $GITHUB_OUTPUT
+          echo "ZIP_SHA256=$(shasum -a 256 Komet.zip | cut -d ' ' -f 1)" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Komet v${{ steps.version.outputs.VERSION }}
+          body: |
+            ## Komet v${{ steps.version.outputs.VERSION }}
+
+            A minimal, lightning-fast application launcher for macOS.
+
+            ### Installation
+
+            **Homebrew:**
+            ```bash
+            brew tap wickes1/tap
+            brew install --cask komet
+            ```
+
+            **Manual:**
+            1. Download `Komet.dmg`
+            2. Open the DMG and drag Komet to Applications
+            3. Grant Accessibility permissions when prompted
+
+            ### Checksums
+            - DMG: `${{ steps.sha256.outputs.DMG_SHA256 }}`
+            - ZIP: `${{ steps.sha256.outputs.ZIP_SHA256 }}`
+          files: |
+            Komet.dmg
+            Komet.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

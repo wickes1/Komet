@@ -1,6 +1,13 @@
 import AppKit
 import ServiceManagement
 
+// MARK: - Configuration
+
+enum Config {
+    static let githubURL = "https://github.com/wickes1/Komet"
+    static let releasesURL = "\(githubURL)/releases/latest"
+}
+
 // MARK: - Fuzzy Matching
 
 func fuzzyMatch(_ query: String, in text: String) -> (matches: Bool, score: Int) {
@@ -79,6 +86,8 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     var apps: [AppItem] = []
     var filtered: [AppItem] = []
     var showRunningOnly = false
+    var aboutPanel: NSPanel?
+    var aboutEventMonitor: Any?
 
     override init() {
         // Borderless floating panel with Visual Effect View
@@ -184,7 +193,7 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     }
 
     func handleMouseMoved(_ event: NSEvent) {
-        guard window.isVisible else { return }
+        guard window.isVisible, event.window == window else { return }
         let point = list.convert(event.locationInWindow, from: nil)
         let row = list.row(at: point)
         if row >= 0 && row != list.selectedRow {
@@ -271,18 +280,23 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
                 DispatchQueue.main.async { self.toggle() }
                 return nil
             }
-            // Handle Enter/Escape/Tab when window is visible
+            // Handle Tab/Cmd+Q/Cmd+R when window is visible
+            // Note: Enter/Escape are handled by control(_:textView:doCommandBy:)
             if self.window.isVisible {
-                if event.keyCode == 36 { // Enter
-                    self.launch()
-                    return nil
-                }
-                if event.keyCode == 53 { // Escape
-                    self.window.orderOut(nil)
-                    return nil
-                }
                 if event.keyCode == 48 { // Tab
                     self.toggleRunningFilter()
+                    return nil
+                }
+                if event.keyCode == 12 && event.modifierFlags.contains(.command) { // Cmd+Q
+                    NSApp.terminate(nil)
+                    return nil
+                }
+                if event.keyCode == 15 && event.modifierFlags.contains(.command) { // Cmd+R
+                    self.restartApp()
+                    return nil
+                }
+                if event.keyCode == 43 && event.modifierFlags.contains(.command) { // Cmd+,
+                    self.showAbout()
                     return nil
                 }
             }
@@ -290,20 +304,134 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         }
     }
 
+    func showAbout() {
+        // Toggle: close if already open
+        if let panel = aboutPanel, panel.isVisible {
+            panel.close()
+            if let monitor = aboutEventMonitor {
+                NSEvent.removeMonitor(monitor)
+                aboutEventMonitor = nil
+            }
+            aboutPanel = nil
+            return
+        }
+
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+
+        aboutPanel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 260, height: 180),
+            styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView],
+            backing: .buffered, defer: false
+        )
+        guard let aboutPanel = aboutPanel else { return }
+        aboutPanel.level = .floating
+        aboutPanel.isOpaque = false
+        aboutPanel.backgroundColor = .clear
+        aboutPanel.titleVisibility = .hidden
+        aboutPanel.titlebarAppearsTransparent = true
+        aboutPanel.center()
+
+        let visualEffect = NSVisualEffectView(frame: aboutPanel.contentView!.bounds)
+        visualEffect.autoresizingMask = [.width, .height]
+        visualEffect.material = .hudWindow
+        visualEffect.state = .active
+        visualEffect.wantsLayer = true
+        visualEffect.layer?.cornerRadius = 16
+        visualEffect.layer?.masksToBounds = true
+        aboutPanel.contentView = visualEffect
+
+        // App icon from bundle Resources
+        let icon = NSImageView(frame: NSRect(x: 98, y: 110, width: 64, height: 64))
+        if let resourcePath = Bundle.main.resourcePath {
+            let iconPath = (resourcePath as NSString).appendingPathComponent("AppIcon.icns")
+            if let appIcon = NSImage(contentsOfFile: iconPath) {
+                icon.image = appIcon
+            } else {
+                icon.image = NSApp.applicationIconImage
+            }
+        } else {
+            icon.image = NSApp.applicationIconImage
+        }
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        visualEffect.addSubview(icon)
+
+        // App name
+        let name = NSTextField(labelWithString: "Komet")
+        name.frame = NSRect(x: 0, y: 80, width: 260, height: 24)
+        name.font = .systemFont(ofSize: 18, weight: .semibold)
+        name.textColor = .white
+        name.alignment = .center
+        visualEffect.addSubview(name)
+
+        // Version
+        let versionLabel = NSTextField(labelWithString: "v\(version)")
+        versionLabel.frame = NSRect(x: 0, y: 58, width: 260, height: 18)
+        versionLabel.font = .systemFont(ofSize: 12, weight: .regular)
+        versionLabel.textColor = .tertiaryLabelColor
+        versionLabel.alignment = .center
+        visualEffect.addSubview(versionLabel)
+
+        // Links row
+        let github = NSTextField(labelWithString: "GitHub")
+        github.frame = NSRect(x: 70, y: 20, width: 50, height: 16)
+        github.font = .systemFont(ofSize: 12, weight: .medium)
+        github.textColor = .linkColor
+        github.isSelectable = false
+        github.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(openGitHub)))
+        visualEffect.addSubview(github)
+
+        let separator = NSTextField(labelWithString: "·")
+        separator.frame = NSRect(x: 122, y: 20, width: 16, height: 16)
+        separator.font = .systemFont(ofSize: 12)
+        separator.textColor = .tertiaryLabelColor
+        separator.alignment = .center
+        visualEffect.addSubview(separator)
+
+        let releases = NSTextField(labelWithString: "Releases")
+        releases.frame = NSRect(x: 138, y: 20, width: 55, height: 16)
+        releases.font = .systemFont(ofSize: 12, weight: .medium)
+        releases.textColor = .linkColor
+        releases.isSelectable = false
+        releases.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(checkForUpdates)))
+        visualEffect.addSubview(releases)
+
+        aboutEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.keyCode == 53 { // Escape
+                self?.showAbout() // Toggle off
+            }
+            return event
+        }
+
+        aboutPanel.makeKeyAndOrderFront(nil)
+    }
+
+    @objc func openGitHub() {
+        guard let url = URL(string: Config.githubURL) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    @objc func checkForUpdates() {
+        guard let url = URL(string: Config.releasesURL) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     func loadApps() {
         var newApps: [AppItem] = []
         let ws = NSWorkspace.shared
         let running = Set(ws.runningApplications.compactMap { $0.bundleURL })
+        let fm = FileManager.default
 
         let dirs = ["/Applications", "/System/Applications", "\(NSHomeDirectory())/Applications"]
         for dir in dirs {
-            guard let urls = try? FileManager.default.contentsOfDirectory(at: URL(fileURLWithPath: dir), includingPropertiesForKeys: nil) else { continue }
-            for url in urls where url.pathExtension == "app" {
-                let name = url.deletingPathExtension().lastPathComponent
-                let icon = ws.icon(forFile: url.path)
-                icon.size = NSSize(width: 32, height: 32)
-
-                newApps.append(AppItem(name: name, url: url, icon: icon, running: running.contains(url)))
+            guard let enumerator = fm.enumerator(at: URL(fileURLWithPath: dir), includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { continue }
+            for case let url as URL in enumerator {
+                if url.pathExtension == "app" {
+                    let name = url.deletingPathExtension().lastPathComponent
+                    let icon = ws.icon(forFile: url.path)
+                    icon.size = NSSize(width: 32, height: 32)
+                    newApps.append(AppItem(name: name, url: url, icon: icon, running: running.contains(url)))
+                    enumerator.skipDescendants() // Don't scan inside .app bundles
+                }
             }
         }
         newApps.sort(by: AppItem.sortOrder)
@@ -396,6 +524,14 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         let app = filtered[list.selectedRow]
         guard app.running else { return }
         quitApp(app)
+    }
+
+    func restartApp() {
+        guard let executablePath = Bundle.main.executablePath else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        try? process.run()
+        NSApp.terminate(nil)
     }
 
     func refreshApps() {
