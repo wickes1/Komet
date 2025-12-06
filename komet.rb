@@ -9,20 +9,19 @@ cask "komet" do
 
   depends_on macos: ">= :ventura"
 
+  # Avoid conflict with homebrew-cask/komet (git commit editor)
+  conflicts_with cask: "komet"
+
   app "Komet.app"
 
-  postflight do
-    # Remove quarantine flag to bypass Gatekeeper for unsigned app
-    # Using sudo for recursive removal on app bundle
-    system_command "/usr/bin/xattr",
-                   args: ["-r", "-d", "com.apple.quarantine", "#{appdir}/Komet.app"],
-                   sudo: true
+  caveats <<~EOS
+    Komet is unsigned. If blocked by Gatekeeper:
+    1. Go to System Settings → Privacy & Security
+    2. Click "Open Anyway" next to the Komet warning
 
-    # Remind user about accessibility permissions
-    ohai "Komet requires Accessibility permissions to work."
-    ohai "Go to System Settings > Privacy & Security > Accessibility"
-    ohai "and enable Komet."
-  end
+    Komet requires Accessibility permissions:
+    System Settings → Privacy & Security → Accessibility → Enable Komet
+  EOS
 
   zap trash: [
     "~/Library/Preferences/com.wickes1.komet.plist",

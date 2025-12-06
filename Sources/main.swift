@@ -88,8 +88,17 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     var showRunningOnly = false
     var aboutPanel: NSPanel?
     var aboutEventMonitor: Any?
+    var statusItem: NSStatusItem?
 
     override init() {
+        // Menu bar icon for fallback access
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        if let button = statusItem?.button {
+            button.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Komet")
+            button.action = #selector(statusBarClicked)
+        }
+
+
         // Borderless floating panel with Visual Effect View
         window = KeyablePanel(
             contentRect: NSRect(x: 0, y: 0, width: 680, height: 450),
@@ -192,6 +201,10 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         }
     }
 
+    @objc func statusBarClicked() {
+        toggle()
+    }
+
     func handleMouseMoved(_ event: NSEvent) {
         guard window.isVisible, event.window == window else { return }
         let point = list.convert(event.locationInWindow, from: nil)
@@ -213,7 +226,7 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     func applicationDidFinishLaunching(_ n: Notification) {
         NSApp.setActivationPolicy(.accessory)
         setupMenu()
-        registerHotkey()
+        requestAccessibilityPermission()
         enableLaunchAtLogin()
 
         // Load apps in background to avoid blocking startup
@@ -252,25 +265,54 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
 
     func enableLaunchAtLogin() {
         if #available(macOS 13.0, *) {
-            do {
-                try SMAppService.mainApp.register()
-            } catch {
-                // Already registered or failed - silently continue
+            // Only register if not already enabled
+            if SMAppService.mainApp.status != .enabled {
+                do {
+                    try SMAppService.mainApp.register()
+                } catch {
+                    // Failed to register - silently continue
+                }
+            }
+        }
+    }
+
+    var globalMonitor: Any?
+    var hasPromptedAccessibility = false
+
+    func requestAccessibilityPermission() {
+        // Check if already trusted
+        if AXIsProcessTrusted() {
+            registerHotkey()
+            return
+        }
+
+        // Show prompt only once
+        if !hasPromptedAccessibility {
+            let opts = NSDictionary(object: kCFBooleanTrue!, forKey: kAXTrustedCheckOptionPrompt.takeUnretainedValue() as NSString) as CFDictionary
+            AXIsProcessTrustedWithOptions(opts)
+            hasPromptedAccessibility = true
+        }
+
+        // Poll silently until permission is granted
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            if AXIsProcessTrusted() {
+                self?.registerHotkey()
+            } else {
+                self?.requestAccessibilityPermission()
             }
         }
     }
 
     func registerHotkey() {
-        let opts = NSDictionary(object: kCFBooleanTrue!, forKey: kAXTrustedCheckOptionPrompt.takeUnretainedValue() as NSString) as CFDictionary
-        AXIsProcessTrustedWithOptions(opts)
-
         let isHotkey = { (event: NSEvent) -> Bool in
             event.modifierFlags.contains(.command) && event.keyCode == 49 // Cmd+Space
         }
 
         // Global monitor - when other apps are focused
-        NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if isHotkey(event) { DispatchQueue.main.async { self?.toggle() } }
+        if globalMonitor == nil {
+            globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                if isHotkey(event) { DispatchQueue.main.async { self?.toggle() } }
+            }
         }
 
         // Local monitor - when Komet is focused
@@ -595,6 +637,18 @@ extension Komet: NSTableViewDataSource, NSTableViewDelegate {
         cell?.viewWithTag(4)?.isHidden = !app.running
 
         return cell
+    }
+}
+
+// Ensure only one instance runs (only when running as .app bundle)
+if let bundleID = Bundle.main.bundleIdentifier {
+    let runningApps = NSWorkspace.shared.runningApplications.filter {
+        $0.bundleIdentifier == bundleID && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
+    }
+    if !runningApps.isEmpty {
+        // Another instance is running - activate it and exit
+        runningApps.first?.activate()
+        exit(0)
     }
 }
 

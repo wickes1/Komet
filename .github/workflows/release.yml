@@ -118,8 +118,7 @@ jobs:
 
             **Homebrew:**
             ```bash
-            brew tap wickes1/tap
-            brew install --cask komet
+            brew install --no-quarantine wickes1/tap/komet
             ```
 
             **Manual:**

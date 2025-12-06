@@ -18,8 +18,8 @@ DMG_NAME := $(APP_NAME)-$(VERSION).dmg
 build:
 	swift build
 
-run: build
-	.build/debug/$(APP_NAME)
+run: sign
+	open $(APP_BUNDLE)
 
 clean:
 	swift package clean
