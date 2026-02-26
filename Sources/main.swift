@@ -165,6 +165,7 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         var seen = Set<String>()
         var result: [AppItem] = []
 
+        // Spotlight discovery
         let task = Process()
         let pipe = Pipe()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
@@ -173,14 +174,23 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         try? task.run()
         task.waitUntilExit()
 
-        let paths = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+        var paths = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
             .components(separatedBy: "\n").filter { !$0.isEmpty } ?? []
+
+        // Direct filesystem scan to catch apps Spotlight missed
+        let fm = FileManager.default
+        for dir in Config.appDirectories {
+            guard let entries = try? fm.contentsOfDirectory(atPath: dir) else { continue }
+            for entry in entries where entry.hasSuffix(".app") {
+                paths.append((dir as NSString).appendingPathComponent(entry))
+            }
+        }
 
         for path in paths + Config.specialApps {
             let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
             guard seen.insert(url.path.lowercased()).inserted,
                   url.pathComponents.filter({ $0.hasSuffix(".app") }).count == 1,
-                  Config.appDirectories.contains(where: { path.hasPrefix($0) }) || Config.specialApps.contains(path)
+                  Config.appDirectories.contains(where: { url.path.hasPrefix($0) }) || Config.specialApps.contains(path)
             else { continue }
 
             let bundle = Bundle(url: url)
