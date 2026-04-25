@@ -285,8 +285,10 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
 
     func restartApp() {
         guard let path = Bundle.main.executablePath else { return }
+        let pid = ProcessInfo.processInfo.processIdentifier
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: path)
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "while kill -0 \(pid) 2>/dev/null; do sleep 0.1; done; \"\(path)\""]
         try? p.run()
         NSApp.terminate(nil)
     }
