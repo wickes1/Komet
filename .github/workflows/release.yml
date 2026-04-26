@@ -118,7 +118,7 @@ jobs:
 
             **Homebrew:**
             ```bash
-            brew install --no-quarantine wickes1/tap/komet
+            brew install wickes1/tap/komet
             ```
 
             **Manual:**
@@ -166,6 +166,9 @@ jobs:
             end
 
             postflight do
+              system_command "/usr/bin/xattr",
+                             args: ["-dr", "com.apple.quarantine", "#{appdir}/Komet.app"],
+                             must_succeed: false
               system_command "open", args: ["#{appdir}/Komet.app"]
             end
 

@@ -5,16 +5,16 @@ Minimal macOS app launcher.
 ## Install
 
 ```bash
-brew install --no-quarantine wickes1/tap/komet
+brew install wickes1/tap/komet
 ```
 
 ## Upgrade
 
 ```bash
-brew upgrade --no-quarantine wickes1/tap/komet
+brew upgrade wickes1/tap/komet
 ```
 
-> **Note:** The `--no-quarantine` flag is required for unsigned apps. If you see a Gatekeeper warning, go to **System Settings → Privacy & Security** and click **Open Anyway**.
+> **Note:** Komet is unsigned. The cask strips the Gatekeeper quarantine attribute on install. If you still see a Gatekeeper warning, go to **System Settings → Privacy & Security** and click **Open Anyway**.
 
 ## After Upgrade
 
