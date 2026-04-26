@@ -357,12 +357,36 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     }
 
     func requestAccessibilityPermission() {
-        if AXIsProcessTrusted() { registerHotkey(); return }
+        let trustedKey = "KometWasTrustedOnce"
+        if AXIsProcessTrusted() {
+            UserDefaults.standard.set(true, forKey: trustedKey)
+            registerHotkey()
+            return
+        }
         if !hasPromptedAccessibility {
-            AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary)
+            let wasTrustedBefore = UserDefaults.standard.bool(forKey: trustedKey)
+            if wasTrustedBefore {
+                showStaleTCCDialog()
+            } else {
+                AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary)
+            }
             hasPromptedAccessibility = true
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.requestAccessibilityPermission() }
+    }
+
+    func showStaleTCCDialog() {
+        let alert = NSAlert()
+        alert.messageText = "Re-authorize Komet for Accessibility"
+        alert.informativeText = "After this upgrade, macOS no longer recognizes Komet's Accessibility permission. Open System Settings → Privacy & Security → Accessibility, remove the existing Komet entry, then re-add this version."
+        alert.addButton(withTitle: "Open Accessibility Settings")
+        alert.addButton(withTitle: "Later")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                NSWorkspace.shared.open(url)
+            }
+        }
     }
 
     func registerHotkey() {
