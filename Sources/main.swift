@@ -190,7 +190,7 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
             guard seen.insert(url.path.lowercased()).inserted,
                   url.pathComponents.filter({ $0.hasSuffix(".app") }).count == 1,
-                  Config.appDirectories.contains(where: { url.path.hasPrefix($0) }) || Config.specialApps.contains(path)
+                  Config.appDirectories.contains(where: { path.hasPrefix($0) }) || Config.specialApps.contains(path)
             else { continue }
 
             let bundle = Bundle(url: url)
@@ -378,7 +378,7 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     func showStaleTCCDialog() {
         let alert = NSAlert()
         alert.messageText = "Re-authorize Komet for Accessibility"
-        alert.informativeText = "After this upgrade, macOS no longer recognizes Komet's Accessibility permission. Open System Settings → Privacy & Security → Accessibility, remove the existing Komet entry, then re-add this version."
+        alert.informativeText = "After this upgrade, macOS no longer recognizes Komet's Accessibility permission.\n\n1. Open System Settings → Privacy & Security → Accessibility\n2. Remove the old Komet entry (toggle off or use \"-\" button)\n3. Re-add Komet (use \"+\" button or drag from Applications)"
         alert.addButton(withTitle: "Open Accessibility Settings")
         alert.addButton(withTitle: "Later")
         NSApp.activate(ignoringOtherApps: true)
@@ -541,8 +541,17 @@ extension Komet: NSTableViewDataSource, NSTableViewDelegate {
 
 if let id = Bundle.main.bundleIdentifier,
    let other = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == id && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) {
-    other.activate()
-    exit(0)
+    let isUpgrade = !AXIsProcessTrusted() && UserDefaults.standard.bool(forKey: "KometWasTrustedOnce")
+    if isUpgrade {
+        other.forceTerminate()
+        let deadline = Date().addingTimeInterval(3)
+        while other.isTerminated == false, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+    } else {
+        other.activate()
+        exit(0)
+    }
 }
 
 let app = NSApplication.shared
