@@ -6,6 +6,7 @@ Minimal macOS app launcher.
 
 ```bash
 brew install wickes1/tap/komet
+open -a Komet
 ```
 
 ## Upgrade
