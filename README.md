@@ -4,6 +4,8 @@ Minimal macOS app launcher.
 
 ## Install
 
+Runs on Apple silicon and Intel Macs with macOS 13 or later.
+
 ```bash
 brew install wickes1/tap/komet
 open -a Komet
@@ -59,8 +61,9 @@ make install
 
 ## Note
 
-`Cmd+Space` conflicts with Spotlight. Disable it in:
-**System Settings → Keyboard → Keyboard Shortcuts → Spotlight**
+`Cmd+Space` is Spotlight's shortcut on a new Mac. Turn off **Show Spotlight search** in
+**System Settings → Keyboard → Keyboard Shortcuts → Spotlight**, then quit and reopen Komet.
+Until you do, Komet says so when it starts and still opens from its menu bar icon.
 
 ## License
 

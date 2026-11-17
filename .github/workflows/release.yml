@@ -26,7 +26,14 @@ jobs:
 
       - name: Build Release
         run: |
-          swift build -c release
+          # One build per architecture joined with lipo, so the app runs on Apple silicon and Intel Macs.
+          # (The same commands work with the Command Line Tools alone, so a release build can be reproduced locally.)
+          for arch in arm64 x86_64; do
+            swift build -c release --triple "$arch-apple-macosx13.0" --scratch-path ".build/release-$arch"
+          done
+          bin() { swift build -c release --triple "$1-apple-macosx13.0" --scratch-path ".build/release-$1" --show-bin-path; }
+          lipo -create "$(bin arm64)/Komet" "$(bin x86_64)/Komet" -output .build/Komet
+          lipo -archs .build/Komet
 
       - name: Get version
         id: version
@@ -36,7 +43,7 @@ jobs:
         run: |
           mkdir -p Komet.app/Contents/MacOS
           mkdir -p Komet.app/Contents/Resources
-          cp .build/release/Komet Komet.app/Contents/MacOS/
+          cp .build/Komet Komet.app/Contents/MacOS/
           cp AppIcon.icns Komet.app/Contents/Resources/
           cp Info.plist Komet.app/Contents/
           # Inject version from git tag
@@ -140,14 +147,21 @@ jobs:
 
       - name: Update Homebrew Tap
         env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          # Private half of a deploy key with write access to wickes1/homebrew-tap only.
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
         run: |
-          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
-            echo "HOMEBREW_TAP_TOKEN not set, skipping tap update"
-            exit 0
+          if [ -z "$TAP_DEPLOY_KEY" ]; then
+            echo "::error::TAP_DEPLOY_KEY is not set: the release is out, but the Homebrew cask was not updated"
+            exit 1
           fi
+          mkdir -p ~/.ssh
+          printf '%s\n' "$TAP_DEPLOY_KEY" > ~/.ssh/tap_deploy_key
+          chmod 600 ~/.ssh/tap_deploy_key
+          # GitHub's published host key (api.github.com/meta), pinned instead of trusting the first connection.
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_deploy_key -o IdentitiesOnly=yes"
 
-          git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/wickes1/homebrew-tap.git tap-repo
+          git clone git@github.com:wickes1/homebrew-tap.git tap-repo
           cd tap-repo
 
           cat > Casks/komet.rb << 'CASK'
@@ -157,7 +171,7 @@ jobs:
 
             url "https://github.com/wickes1/Komet/releases/download/v#{version}/Komet.dmg"
             name "Komet"
-            desc "Minimal, lightning-fast application launcher for macOS"
+            desc "Minimal, lightning-fast application launcher"
             homepage "https://github.com/wickes1/Komet"
 
             depends_on macos: :ventura
@@ -174,8 +188,16 @@ jobs:
               run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{appdir}}/Komet.app"], must_succeed: false
             end
 
+            # Without this an uninstall deletes the app and leaves it running.
+            uninstall quit: "com.wickes1.komet"
+
+            zap trash: [
+              "~/Library/Caches/com.wickes1.komet",
+              "~/Library/Preferences/com.wickes1.komet.plist",
+            ]
+
             caveats <<~EOS
-              Start Komet now, and again after every upgrade (an upgrade quits it):
+              Start Komet now:
                 open -a Komet
 
               Komet needs no permissions. Its hotkey is Cmd+Space: turn off Spotlight's
@@ -185,11 +207,6 @@ jobs:
               1. Go to System Settings → Privacy & Security
               2. Click "Open Anyway" next to the Komet warning
             EOS
-
-            zap trash: [
-              "~/Library/Preferences/com.wickes1.komet.plist",
-              "~/Library/Caches/com.wickes1.komet",
-            ]
           end
           CASK
 

@@ -63,6 +63,20 @@ func matchScore(_ query: String, name: String, running: Bool) -> Int? {
     return tier + (running ? 100 : 0) - min(t.count, 99)
 }
 
+// MARK: - Spotlight
+
+/// Whether Spotlight still has ⌘Space, judged from the system's keyboard-shortcut settings.
+///
+/// `hotKeys` is the "AppleSymbolicHotKeys" dictionary of com.apple.symbolichotkeys, where entry 64 is
+/// "Show Spotlight search" and its parameters are (character, key code, modifier flags). A Mac that has
+/// never changed the shortcut has no entry at all, which means the factory setting: on, with ⌘Space.
+func spotlightOwnsCommandSpace(_ hotKeys: [String: Any]?) -> Bool {
+    guard let entry = hotKeys?["64"] as? [String: Any] else { return true }
+    guard entry["enabled"] as? Bool == true else { return false }
+    guard let parameters = (entry["value"] as? [String: Any])?["parameters"] as? [Int], parameters.count >= 3 else { return true }
+    return parameters[1] == kVK_Space && parameters[2] == Int(NSEvent.ModifierFlags.command.rawValue)
+}
+
 // MARK: - Data Model
 
 struct AppItem {
@@ -488,12 +502,17 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
 
     func registerHotkey() {
         hotkey = Hotkey(keyCode: kVK_Space, modifiers: cmdKey) { [weak self] in self?.toggle() }
-        if hotkey == nil {
-            let alert = NSAlert()
-            alert.messageText = "Komet cannot use ⌘Space"
-            alert.informativeText = "Another app or a system shortcut already owns ⌘Space. Turn off Spotlight's shortcut in System Settings → Keyboard → Keyboard Shortcuts → Spotlight, then restart Komet. Until then, open Komet from its menu bar icon."
-            NSApp.activate(ignoringOtherApps: true)
-            alert.runModal()
+        // macOS ships with ⌘Space on Spotlight. Whether the system then keeps the key from Komet silently is not
+        // something Komet can observe, so it reads the setting and says what to change instead of failing quietly.
+        let hotKeys = CFPreferencesCopyAppValue("AppleSymbolicHotKeys" as CFString, "com.apple.symbolichotkeys" as CFString) as? [String: Any]
+        if spotlightOwnsCommandSpace(hotKeys) {
+            explainHotkeyConflict(
+                title: "Spotlight is using ⌘Space",
+                detail: "Komet opens with ⌘Space, which Spotlight also uses. In Keyboard Shortcuts → Spotlight, turn off \"Show Spotlight search\", then quit and reopen Komet. Until then, open Komet from its menu bar icon.")
+        } else if hotkey == nil {
+            explainHotkeyConflict(
+                title: "Komet cannot use ⌘Space",
+                detail: "Another app already owns ⌘Space. Free it, then quit and reopen Komet. Until then, open Komet from its menu bar icon.")
         }
 
         // Keys while the launcher is open; a local monitor sees only Komet's own events and needs no permission.
@@ -508,6 +527,19 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             default: return e
             }
         }!)
+    }
+
+    func explainHotkeyConflict(title: String, detail: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.addButton(withTitle: "Open Keyboard Shortcuts")
+        alert.addButton(withTitle: "Later")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn,
+           let url = URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     // MARK: - About

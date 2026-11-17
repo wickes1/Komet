@@ -50,7 +50,36 @@ private let installed: [(String, Bool)] = [
         #expect(matchScore("zzz", name: "Terminal", running: false) == nil)
     }
 
-    @Test func wordsSplitAtSpacesPunctuationAndCamelCase() {
+}
+
+// Komet cannot tell whether Spotlight is taking ⌘Space from it, so it reads the setting; a wrong answer either
+// leaves a new user pressing ⌘Space with nothing happening, or nags a user who already turned Spotlight's off.
+@Suite struct SpotlightShortcut {
+    private func entry(enabled: Bool, keyCode: Int = 49, modifiers: Int = 1_048_576) -> [String: Any] {
+        ["64": ["enabled": enabled, "value": ["parameters": [32, keyCode, modifiers], "type": "standard"]]]
+    }
+
+    @Test func aMacThatNeverChangedItStillHasSpotlightOnCommandSpace() {
+        #expect(spotlightOwnsCommandSpace(nil))
+        #expect(spotlightOwnsCommandSpace(["65": ["enabled": true]]))
+    }
+
+    @Test func turnedOffMeansFree() {
+        #expect(!spotlightOwnsCommandSpace(entry(enabled: false)))
+    }
+
+    @Test func onWithCommandSpaceIsAConflict() {
+        #expect(spotlightOwnsCommandSpace(entry(enabled: true)))
+    }
+
+    @Test func movedToAnotherKeyIsNotAConflict() {
+        #expect(!spotlightOwnsCommandSpace(entry(enabled: true, modifiers: 1_048_576 | 524_288)))
+        #expect(!spotlightOwnsCommandSpace(entry(enabled: true, keyCode: 3)))
+    }
+}
+
+@Suite struct Words {
+    @Test func splitAtSpacesPunctuationAndCamelCase() {
         #expect(words(of: "BetterDisplay") == ["better", "display"])
         #expect(words(of: "Claude Code URL Handler") == ["claude", "code", "url", "handler"])
         #expect(words(of: "BaiduNetdisk_mac") == ["baidu", "netdisk", "mac"])
