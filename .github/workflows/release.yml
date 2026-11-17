@@ -21,6 +21,9 @@ jobs:
         with:
           xcode-version: latest-stable
 
+      - name: Test
+        run: swift test
+
       - name: Build Release
         run: |
           swift build -c release
@@ -124,7 +127,7 @@ jobs:
             **Manual:**
             1. Download `Komet.dmg`
             2. Open the DMG and drag Komet to Applications
-            3. Grant Accessibility permissions when prompted
+            3. Open Komet and press Cmd+Space (no permissions needed)
 
             ### Checksums
             - DMG: `${{ steps.sha256.outputs.DMG_SHA256 }}`
@@ -175,16 +178,12 @@ jobs:
               Start Komet now, and again after every upgrade (an upgrade quits it):
                 open -a Komet
 
+              Komet needs no permissions. Its hotkey is Cmd+Space: turn off Spotlight's
+              shortcut in System Settings → Keyboard → Keyboard Shortcuts → Spotlight.
+
               Komet is unsigned. If blocked by Gatekeeper:
               1. Go to System Settings → Privacy & Security
               2. Click "Open Anyway" next to the Komet warning
-
-              Komet requires Accessibility permissions:
-              System Settings → Privacy & Security → Accessibility → Enable Komet
-
-              After upgrade, re-grant Accessibility permission:
-              1. Remove Komet from Accessibility list
-              2. Re-add Komet
             EOS
 
             zap trash: [

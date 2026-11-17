@@ -5,6 +5,7 @@ let package = Package(
     name: "Komet",
     platforms: [.macOS(.v13)],
     targets: [
-        .executableTarget(name: "Komet", path: "Sources")
+        .executableTarget(name: "Komet", path: "Sources"),
+        .testTarget(name: "KometTests", dependencies: ["Komet"], path: "Tests"),
     ]
 )

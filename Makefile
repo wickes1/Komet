@@ -1,4 +1,4 @@
-.PHONY: build run clean app install dmg sign notarize release _create_dmg
+.PHONY: build test run clean app install dmg sign notarize release _create_dmg
 
 # Configuration
 APP_NAME := Komet
@@ -17,6 +17,14 @@ DMG_NAME := $(APP_NAME)-$(VERSION).dmg
 
 build:
 	swift build
+
+# With only the Command Line Tools (no Xcode), Swift Testing is found only when its framework paths are passed in.
+CLT_FRAMEWORKS := /Library/Developer/CommandLineTools/Library/Developer/Frameworks
+CLT_LIB := /Library/Developer/CommandLineTools/Library/Developer/usr/lib
+test:
+	if [ "$$(xcode-select -p)" = /Library/Developer/CommandLineTools ]; then \
+		swift test -Xswiftc -F$(CLT_FRAMEWORKS) -Xlinker -F$(CLT_FRAMEWORKS) -Xlinker -rpath -Xlinker $(CLT_FRAMEWORKS) -Xlinker -rpath -Xlinker $(CLT_LIB); \
+	else swift test; fi
 
 run: sign
 	open $(APP_BUNDLE)

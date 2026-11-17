@@ -17,17 +17,17 @@ brew upgrade wickes1/tap/komet
 
 > **Note:** Komet is unsigned. The cask strips the Gatekeeper quarantine attribute on install. If you still see a Gatekeeper warning, go to **System Settings → Privacy & Security** and click **Open Anyway**.
 
-## After Upgrade
+## Permissions
 
-After upgrading, you need to re-grant Accessibility permission:
+None. Komet registers `Cmd+Space` as a system hotkey, which needs no Accessibility permission, so an upgrade has nothing to re-grant. If an older Komet is still listed under **System Settings → Privacy & Security → Accessibility**, you can remove it.
 
-1. Quit Komet (`Cmd+Q` or click menu bar 🔍 icon)
-2. Go to **System Settings → Privacy & Security → Accessibility**
-3. Remove Komet from the list (select and click **−**)
-4. Click **+** and add Komet back
-5. Reopen Komet
+## Searching
 
-This is a macOS limitation - permissions are tied to the app binary which changes on upgrade.
+- A name that starts with what you typed comes first (`te` → Terminal), then a word in the name (`teams` → Microsoft Teams), then the initials (`vsc` → Visual Studio Code), then the letters anywhere. Among equal matches a running app comes first.
+- Both the app's own name and its file name count: VS Code calls itself "Code", and `vsc` still finds it.
+- While Komet is open the keyboard switches to your Latin layout, so a Chinese or Japanese input method does not turn app names into candidates. The previous input method comes back when Komet closes.
+- Komet closes when another app takes focus.
+- Apps installed while Komet runs show up the next time you open it.
 
 ## Open at Login
 
@@ -52,6 +52,7 @@ To start Komet automatically when you log in:
 ## Build from Source
 
 ```bash
+make test
 make app
 make install
 ```

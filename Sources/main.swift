@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 
 // MARK: - Configuration
 
@@ -8,21 +9,58 @@ enum Config {
     static let specialApps = ["/System/Library/CoreServices/Finder.app"]
 }
 
-// MARK: - Fuzzy Matching
+// MARK: - Matching
 
-func fuzzyMatch(_ query: String, in text: String) -> (matches: Bool, score: Int) {
-    let q = query.lowercased(), t = text.lowercased()
-    guard !q.isEmpty else { return (true, 0) }
-    if t.contains(q) { return (true, 1000) }
-
-    var qi = q.startIndex, score = 0, prev: Int?
-    for (i, c) in t.enumerated() {
-        guard qi < q.endIndex, c == q[qi] else { continue }
-        score += (prev == i - 1 ? 10 : 0) + (i == 0 || t[t.index(t.startIndex, offsetBy: i - 1)] == " " ? 20 : 0) + 1
-        prev = i
-        qi = q.index(after: qi)
+/// The words of an app name, lowercased: split at spaces and punctuation and at camel-case humps,
+/// so "BetterDisplay" is "better", "display".
+func words(of name: String) -> [String] {
+    var result: [String] = [], current = ""
+    var previous: Character?
+    for c in name {
+        let startsWord = c.isUppercase && (previous?.isLowercase ?? false)
+        if !(c.isLetter || c.isNumber) {
+            if !current.isEmpty { result.append(current); current = "" }
+        } else {
+            if startsWord, !current.isEmpty { result.append(current); current = "" }
+            current.append(c)
+        }
+        previous = c
     }
-    return (qi == q.endIndex, score)
+    if !current.isEmpty { result.append(current) }
+    return result.map { $0.lowercased() }
+}
+
+/// How well `query` matches an app `name`; higher is better, `nil` for no match.
+///
+/// Tiers, best first: the name starts with the query ("te" → Terminal), a word does ("code" →
+/// Visual Studio Code), the words' initials do ("vsc"), the query appears anywhere, the query's
+/// letters appear in order. Within a tier a running app beats one that is not, then a shorter name.
+func matchScore(_ query: String, name: String, running: Bool) -> Int? {
+    let q = query.lowercased(), t = name.lowercased()
+    guard !q.isEmpty else { return 0 }
+    let ws = words(of: name)
+    let tier: Int
+    if t.hasPrefix(q) {
+        tier = 5000
+    } else if ws.contains(where: { $0.hasPrefix(q) }) {
+        tier = 4000
+    } else if String(ws.compactMap(\.first)).hasPrefix(q) {
+        tier = 3000
+    } else if let r = t.range(of: q) {
+        tier = 2000 - min(t.distance(from: t.startIndex, to: r.lowerBound), 50) * 10
+    } else {
+        // Letters in order, rewarding runs of consecutive letters and letters that start a word.
+        var qi = q.startIndex, score = 0, prev: Int?
+        for (i, c) in t.enumerated() {
+            guard qi < q.endIndex, c == q[qi] else { continue }
+            score += (prev == i - 1 ? 10 : 0) + (i == 0 || t[t.index(t.startIndex, offsetBy: i - 1)] == " " ? 20 : 0) + 1
+            prev = i
+            qi = q.index(after: qi)
+        }
+        guard qi == q.endIndex else { return nil }
+        tier = min(score, 900)
+    }
+    return tier + (running ? 100 : 0) - min(t.count, 99)
 }
 
 // MARK: - Data Model
@@ -48,6 +86,39 @@ class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
     override func performClose(_ sender: Any?) {}
+}
+
+/// A system-wide hotkey registered with the Carbon event manager.
+///
+/// Unlike a global `NSEvent` monitor, this needs no Accessibility permission, and the keystroke goes
+/// to Komet alone instead of also reaching the app in front.
+final class Hotkey {
+    private var hotKey: EventHotKeyRef?
+    private var handler: EventHandlerRef?
+    private let action: () -> Void
+
+    /// `nil` when the key combination cannot be registered, usually because something else owns it.
+    init?(keyCode: Int, modifiers: Int, action: @escaping () -> Void) {
+        self.action = action
+        var pressed = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        let installed = InstallEventHandler(GetApplicationEventTarget(), { _, _, context in
+            guard let context else { return OSStatus(eventNotHandledErr) }
+            Unmanaged<Hotkey>.fromOpaque(context).takeUnretainedValue().action()
+            return noErr
+        }, 1, &pressed, Unmanaged.passUnretained(self).toOpaque(), &handler)
+        let id = EventHotKeyID(signature: OSType(0x4B4D_4554), id: 1) // "KMET"
+        guard installed == noErr,
+              RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), id, GetApplicationEventTarget(), 0, &hotKey) == noErr
+        else {
+            if let handler { RemoveEventHandler(handler) }
+            return nil
+        }
+    }
+
+    deinit {
+        if let hotKey { UnregisterEventHotKey(hotKey) }
+        if let handler { RemoveEventHandler(handler) }
+    }
 }
 
 // MARK: - Helpers
@@ -78,7 +149,8 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     var monitors: [Any] = []
     var aboutPanel: NSPanel?
     var aboutMonitor: Any?
-    var hasPromptedAccessibility = false
+    var hotkey: Hotkey?
+    var loadingApps = false
 
     deinit {
         monitors.forEach { NSEvent.removeMonitor($0) }
@@ -153,13 +225,34 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     func applicationDidFinishLaunching(_ n: Notification) {
         NSApp.setActivationPolicy(.accessory)
         setupMenu()
-        requestAccessibilityPermission()
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in self?.loadApps() }
+        registerHotkey()
+        // A launcher left floating over the app you switched to is in the way: losing focus closes it.
+        NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
+            // The About panel takes focus from the launcher without replacing it.
+            DispatchQueue.main.async { if let self, NSApp.keyWindow == nil || NSApp.keyWindow !== self.aboutPanel { self.hide() } }
+        }
+        reloadApps()
     }
 
     // MARK: - App Discovery
 
-    func loadApps() {
+    /// Rescans the installed apps in the background, so an app installed since the last scan shows up.
+    func reloadApps() {
+        guard !loadingApps else { return }
+        loadingApps = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = self?.loadApps() ?? []
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.loadingApps = false
+                guard result.map(\.url) != self.apps.map(\.url) else { return }
+                self.apps = result
+                self.applyFilter(selectFirst: true)
+            }
+        }
+    }
+
+    func loadApps() -> [AppItem] {
         let ws = NSWorkspace.shared
         let running = Set(ws.runningApplications.compactMap { $0.bundleURL?.resolvingSymlinksInPath() })
         var seen = Set<String>()
@@ -203,11 +296,7 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         }
 
         result.sort(by: <)
-        DispatchQueue.main.async { [weak self] in
-            self?.apps = result
-            self?.filtered = result
-            self?.list.reloadData()
-        }
+        return result
     }
 
     func refreshApps() {
@@ -221,17 +310,53 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
 
     @objc func toggle() {
         if window.isVisible {
-            window.orderOut(nil)
-            search.stringValue = ""
-            showRunningOnly = false
-            filterIndicator.stringValue = "All"
+            hide()
         } else {
             refreshApps()
             window.center()
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            useLatinKeyboard()
             window.makeFirstResponder(search)
+            applyFilter(selectFirst: true)
+            reloadApps()
         }
+    }
+
+    /// Closes the launcher and clears it, so it opens fresh next time.
+    func hide() {
+        guard window.isVisible else { return }
+        window.orderOut(nil)
+        search.stringValue = ""
+        showRunningOnly = false
+        filterIndicator.stringValue = "All"
+        restoreKeyboard()
+    }
+
+    // MARK: - Keyboard Layout
+
+    /// The input source that was active before Komet switched to a Latin keyboard, to switch back to on close.
+    var keyboardBeforeShow: TISInputSource?
+
+    /// App names are typed in Latin letters. With a Chinese or Japanese input method active they would turn into
+    /// candidate characters first, so the launcher switches to the last Latin keyboard while it is open.
+    func useLatinKeyboard() {
+        let current = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
+        let latin = TISCopyCurrentASCIICapableKeyboardInputSource().takeRetainedValue()
+        guard sourceID(current) != sourceID(latin) else { return }
+        keyboardBeforeShow = current
+        TISSelectInputSource(latin)
+    }
+
+    func restoreKeyboard() {
+        guard let previous = keyboardBeforeShow else { return }
+        keyboardBeforeShow = nil
+        TISSelectInputSource(previous)
+    }
+
+    func sourceID(_ source: TISInputSource) -> String? {
+        guard let value = TISGetInputSourceProperty(source, kTISPropertyInputSourceID) else { return nil }
+        return Unmanaged<CFString>.fromOpaque(value).takeUnretainedValue() as String
     }
 
     // MARK: - Filter
@@ -242,8 +367,14 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         let q = search.stringValue
         let source = showRunningOnly ? apps.filter(\.running) : apps
         filtered = q.isEmpty ? source : source
-            .compactMap { let r = fuzzyMatch(q, in: $0.name); return r.matches ? ($0, r.score) : nil }
-            .sorted { $0.1 > $1.1 }.map(\.0)
+            .compactMap { app -> (AppItem, Int)? in
+                // The bundle's own name can differ from its file: VS Code calls itself "Code".
+                let file = app.url.deletingPathExtension().lastPathComponent
+                let scores = [app.name, file].compactMap { matchScore(q, name: $0, running: app.running) }
+                return scores.max().map { (app, $0) }
+            }
+            .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0.name.lowercased() < $1.0.name.lowercased() }
+            .map(\.0)
         list.reloadData()
         if selectFirst && !filtered.isEmpty { list.selectRowIndexes([0], byExtendingSelection: false) }
     }
@@ -269,8 +400,7 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     @objc func launch() {
         guard list.selectedRow >= 0, list.selectedRow < filtered.count else { return }
         NSWorkspace.shared.open(filtered[list.selectedRow].url)
-        window.orderOut(nil)
-        search.stringValue = ""
+        hide()
     }
 
     func quitApp(_ app: AppItem) {
@@ -308,7 +438,7 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             list.selectRowIndexes([row], byExtendingSelection: false)
             list.scrollRowToVisible(row)
         case #selector(NSResponder.insertNewline(_:)): launch()
-        case #selector(NSResponder.cancelOperation(_:)): window.orderOut(nil)
+        case #selector(NSResponder.cancelOperation(_:)): hide()
         default: return false
         }
         return true
@@ -356,49 +486,19 @@ class Komet: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         NSApp.mainMenu = mainMenu
     }
 
-    func requestAccessibilityPermission() {
-        let trustedKey = "KometWasTrustedOnce"
-        if AXIsProcessTrusted() {
-            UserDefaults.standard.set(true, forKey: trustedKey)
-            registerHotkey()
-            return
-        }
-        if !hasPromptedAccessibility {
-            let wasTrustedBefore = UserDefaults.standard.bool(forKey: trustedKey)
-            if wasTrustedBefore {
-                showStaleTCCDialog()
-            } else {
-                AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary)
-            }
-            hasPromptedAccessibility = true
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.requestAccessibilityPermission() }
-    }
-
-    func showStaleTCCDialog() {
-        let alert = NSAlert()
-        alert.messageText = "Re-authorize Komet for Accessibility"
-        alert.informativeText = "After this upgrade, macOS no longer recognizes Komet's Accessibility permission.\n\n1. Open System Settings → Privacy & Security → Accessibility\n2. Remove the old Komet entry (toggle off or use \"-\" button)\n3. Re-add Komet (use \"+\" button or drag from Applications)"
-        alert.addButton(withTitle: "Open Accessibility Settings")
-        alert.addButton(withTitle: "Later")
-        NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn {
-            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-                NSWorkspace.shared.open(url)
-            }
-        }
-    }
-
     func registerHotkey() {
-        let isHotkey: (NSEvent) -> Bool = { $0.modifierFlags.contains(.command) && $0.keyCode == 49 }
+        hotkey = Hotkey(keyCode: kVK_Space, modifiers: cmdKey) { [weak self] in self?.toggle() }
+        if hotkey == nil {
+            let alert = NSAlert()
+            alert.messageText = "Komet cannot use ⌘Space"
+            alert.informativeText = "Another app or a system shortcut already owns ⌘Space. Turn off Spotlight's shortcut in System Settings → Keyboard → Keyboard Shortcuts → Spotlight, then restart Komet. Until then, open Komet from its menu bar icon."
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+        }
 
-        monitors.append(NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] e in
-            if isHotkey(e) { DispatchQueue.main.async { self?.toggle() } }
-        }!)
-
+        // Keys while the launcher is open; a local monitor sees only Komet's own events and needs no permission.
         monitors.append(NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
             guard let self = self else { return e }
-            if isHotkey(e) { self.toggle(); return nil }
             guard self.window.isVisible else { return e }
             switch (e.keyCode, e.modifierFlags.contains(.command)) {
             case (48, _): self.toggleRunningFilter(); return nil
@@ -539,20 +639,14 @@ extension Komet: NSTableViewDataSource, NSTableViewDelegate {
 
 // MARK: - Entry Point
 
+// One Komet at a time: a second copy could not register the hotkey the first one holds.
 if let id = Bundle.main.bundleIdentifier,
    let other = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == id && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) {
-    let isUpgrade = !AXIsProcessTrusted() && UserDefaults.standard.bool(forKey: "KometWasTrustedOnce")
-    if isUpgrade {
-        other.forceTerminate()
-        let deadline = Date().addingTimeInterval(3)
-        while other.isTerminated == false, Date() < deadline {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-        }
-    } else {
-        other.activate()
-        exit(0)
-    }
+    other.activate()
+    exit(0)
 }
+// Left behind by versions that needed Accessibility permission.
+UserDefaults.standard.removeObject(forKey: "KometWasTrustedOnce")
 
 let app = NSApplication.shared
 let komet = Komet()
